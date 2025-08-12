@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Converter & Downloader Pro</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+    <!-- Background Elements -->
+    <div class="bg-animation">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <div class="logo">
+                    <i class="fas fa-video"></i>
+                    <h1>MediaFlow Pro</h1>
+                </div>
+                <p class="subtitle">Professional Video Converter & Content Downloader</p>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Tab Navigation -->
+            <nav class="tab-navigation">
+                <button class="tab-btn active" data-tab="converter">
+                    <i class="fas fa-exchange-alt"></i>
+                    <span>Video Converter</span>
+                </button>
+                <button class="tab-btn" data-tab="youtube">
+                    <i class="fab fa-youtube"></i>
+                    <span>YouTube Downloader</span>
+                </button>
+                <button class="tab-btn" data-tab="tiktok">
+                    <i class="fab fa-tiktok"></i>
+                    <span>TikTok Downloader</span>
+                </button>
+            </nav>
+
+            <!-- Tab Content -->
+            <div class="content-area">
+                <!-- Video Converter Tab -->
+                <div class="tab-content active" id="converter">
+                    <div class="content-card">
+                        <div class="card-header">
+                            <h2><i class="fas fa-file-video"></i> Convert Video Formats</h2>
+                            <p>Transform your videos to MP4 format with high quality</p>
+                        </div>
+                        <form id="convert-form" class="form-container">
+                            <div class="upload-zone" id="upload-zone">
+                                <div class="upload-content">
+                                    <div class="upload-icon">
+                                        <i class="fas fa-cloud-upload-alt"></i>
+                                    </div>
+                                    <h3>Drop your video files here</h3>
+                                    <p>or <span class="upload-link">browse files</span></p>
+                                    <div class="supported-formats">
+                                        <span>Supports: AVI, MOV, WMV, FLV, MKV, and more</span>
+                                    </div>
+                                </div>
+                                <input type="file" id="video-file" accept="video/*" multiple hidden>
+                            </div>
+                            <div class="progress-container" id="progress-container" style="display: none;">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="progress-fill"></div>
+                                </div>
+                                <div class="progress-text">Converting...</div>
+                            </div>
+                            <div class="format-options">
+                                <label class="format-option">
+                                    <input type="radio" name="output-format" value="mp4" checked>
+                                    <span class="format-label">
+                                        <i class="fas fa-video"></i> MP4 Video
+                                    </span>
+                                </label>
+                                <label class="format-option">
+                                    <input type="radio" name="output-format" value="mp3">
+                                    <span class="format-label">
+                                        <i class="fas fa-music"></i> MP3 Audio Only
+                                    </span>
+                                </label>
+                            </div>
+                            <button type="submit" class="action-btn primary" id="convert-button">
+                                <i class="fas fa-magic"></i>
+                                <span>Convert to MP4</span>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- YouTube Downloader Tab -->
+                <div class="tab-content" id="youtube">
+                    <div class="content-card">
+                        <div class="card-header">
+                            <h2><i class="fab fa-youtube"></i> YouTube Downloader</h2>
+                            <p>Download videos and audio from YouTube in high quality</p>
+                        </div>
+                        <form id="youtube-form" class="form-container">
+                            <div class="input-group">
+                                <div class="input-wrapper">
+                                    <i class="fas fa-link input-icon"></i>
+                                    <input type="text" id="youtube-url" placeholder="Paste YouTube URL here..." required>
+                                </div>
+                            </div>
+                            <div class="format-selector">
+                                <div class="format-options">
+                                    <div class="format-option">
+                                        <input type="radio" id="video-format" name="format" value="video" checked>
+                                        <label for="video-format" class="format-label">
+                                            <i class="fas fa-video"></i>
+                                            <span>Video (MP4)</span>
+                                        </label>
+                                    </div>
+                                    <div class="format-option">
+                                        <input type="radio" id="audio-format" name="format" value="audio">
+                                        <label for="audio-format" class="format-label">
+                                            <i class="fas fa-music"></i>
+                                            <span>Audio (MP3)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+                            <button type="submit" class="action-btn primary">
+                                <i class="fas fa-download"></i>
+                                <span>Download</span>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+
+                <!-- TikTok Downloader Tab -->
+                <div class="tab-content" id="tiktok">
+                    <div class="content-card">
+                        <div class="card-header">
+                            <h2><i class="fab fa-tiktok"></i> TikTok Downloader</h2>
+                            <p>Download TikTok videos without watermarks</p>
+                        </div>
+                        <form id="tiktok-form" class="form-container">
+                            <div class="input-group">
+                                <div class="input-wrapper">
+                                    <i class="fab fa-tiktok input-icon"></i>
+                                    <input type="text" id="tiktok-url" placeholder="Paste TikTok URL here..." required>
+                                </div>
+                            </div>
+                            <div class="feature-highlight">
+                                <div class="feature-item">
+                                    <i class="fas fa-droplet-slash"></i>
+                                    <span>Watermark Removal</span>
+                                </div>
+                                <div class="feature-item">
+                                    <i class="fas fa-hd-video"></i>
+                                    <span>HD Quality</span>
+                                </div>
+                            </div>
+                            <button type="submit" class="action-btn primary">
+                                <i class="fas fa-magic"></i>
+                                <span>Download & Remove Watermark</span>
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Preview Section -->
+        <div id="preview-section" class="content-card hidden">
+            <div class="card-header">
+                <h2><i class="fas fa-eye"></i> Preview</h2>
+                <p>Your converted file is ready</p>
+            </div>
+            <div class="preview-container">
+                <div id="preview-content" class="preview-content">
+                    <!-- Preview content will be inserted here by JavaScript -->
+                </div>
+                <div class="preview-actions">
+                    <a id="download-btn" href="#" class="action-btn primary">
+                        <i class="fas fa-download"></i> Download
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Notification System -->
+        <div id="notifications" class="notification-container"></div>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+</body>
+</html>

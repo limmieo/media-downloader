@@ -1,0 +1,25 @@
+{
+  "name": "video-converter-downloader",
+  "version": "1.0.0",
+  "description": "Modern video converter and downloader application",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder"
+  },
+  "dependencies": {
+    "electron": "^28.0.0",
+    "ffmpeg-static": "^4.4.0",
+    "fluentui-react": "^9.0.0",
+    "axios": "^1.6.0",
+    "ytdl-core": "^4.12.0",
+    "tiktok-scraper": "^1.1.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1"
+  },
+  "devDependencies": {
+    "electron-builder": "^24.6.4"
+  }
+}
