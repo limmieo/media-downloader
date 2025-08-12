@@ -110,6 +110,21 @@
                                     <i class="fas fa-link input-icon"></i>
                                     <input type="text" id="youtube-url" placeholder="Paste YouTube URL here..." required>
                                 </div>
+                                <!-- Thumbnail Preview -->
+                                <div id="youtube-thumbnail" class="thumbnail-preview hidden">
+                                    <img id="youtube-thumb-img" src="" alt="Video thumbnail">
+                                    <div class="thumbnail-info">
+                                        <h4 id="youtube-thumb-title">Loading...</h4>
+                                        <p id="youtube-thumb-duration"></p>
+                                    </div>
+                                </div>
+                            </div>
+                            <!-- Progress Bar -->
+                            <div id="youtube-progress" class="progress-container hidden">
+                                <div class="progress-bar">
+                                    <div class="progress-fill" id="youtube-progress-fill"></div>
+                                </div>
+                                <div class="progress-text" id="youtube-progress-text">Downloading...</div>
                             </div>
                             <div class="format-selector">
                                 <div class="format-options">
@@ -129,32 +144,12 @@
                                     </div>
                                 </div>
                             </div>
-                            <div style="display:flex; gap:0.75rem; flex-wrap: wrap;">
-                                <button id="youtube-preview-btn" type="button" class="action-btn secondary">
-                                    <i class="fas fa-eye"></i>
-                                    <span>Preview</span>
-                                </button>
-                                <button type="submit" class="action-btn primary">
-                                    <i class="fas fa-download"></i>
-                                    <span>Download</span>
-                                </button>
-                            </div>
+                            <button type="submit" class="action-btn primary">
+                                <i class="fas fa-download"></i>
+                                <span>Download</span>
+                            </button>
                         </form>
 
-                        <!-- Inline YouTube Preview -->
-                        <div id="youtube-preview" class="content-card hidden" style="margin-top:1rem;">
-                            <div class="card-header">
-                                <h3><i class="fas fa-eye"></i> YouTube Preview</h3>
-                                <p id="youtube-preview-title" style="opacity:0.8"></p>
-                            </div>
-                            <div class="preview-container">
-                                <div class="preview-content" style="width:100%;">
-                                    <div class="video-wrapper" style="position:relative;padding-top:56.25%;border-radius:12px;overflow:hidden;background:rgba(255,255,255,0.06);">
-                                        <iframe id="youtube-iframe" src="" title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen style="position:absolute;top:0;left:0;width:100%;height:100%;border:0;"></iframe>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
                     </div>
                 </div>
 
@@ -192,6 +187,20 @@
             </div>
         </main>
 
+        <!-- Download History -->
+        <div id="download-history" class="content-card hidden">
+            <div class="card-header">
+                <h2><i class="fas fa-history"></i> Download History</h2>
+                <p>Your recent downloads</p>
+                <button id="clear-history" class="action-btn secondary" style="margin-left: auto;">
+                    <i class="fas fa-trash"></i> Clear
+                </button>
+            </div>
+            <div id="history-list" class="history-list">
+                <!-- History items will be populated here -->
+            </div>
+        </div>
+
         <!-- Preview Section -->
         <div id="preview-section" class="content-card hidden">
             <div class="card-header">
@@ -210,10 +219,15 @@
             </div>
         </div>
 
+        <!-- Theme Toggle -->
+        <button id="theme-toggle" class="theme-toggle" title="Toggle dark/light mode">
+            <i class="fas fa-moon"></i>
+        </button>
+
         <!-- Notification System -->
         <div id="notifications" class="notification-container"></div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <script src="/static/js/main.js?v=2"></script>
 </body>
 </html>
