@@ -273,6 +273,73 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // YouTube downloader
     const youtubeForm = document.getElementById('youtube-form');
+    const youtubePreviewBtn = document.getElementById('youtube-preview-btn');
+    const youtubePreview = document.getElementById('youtube-preview');
+    const youtubeIframe = document.getElementById('youtube-iframe');
+    const youtubePreviewTitle = document.getElementById('youtube-preview-title');
+
+    // Helper: extract YouTube video ID from various URL formats
+    function extractYouTubeId(url) {
+        try {
+            // Handle youtu.be/<id>
+            const short = url.match(/^https?:\/\/(?:www\.)?youtu\.be\/([\w-]{11})/i);
+            if (short) return short[1];
+
+            // Handle youtube.com/watch?v=<id> and variations
+            const u = new URL(url);
+            if ((u.hostname.includes('youtube.com') || u.hostname.includes('youtu.be')) && u.searchParams.get('v')) {
+                const id = u.searchParams.get('v');
+                if (id && id.length === 11) return id;
+            }
+
+            // Handle embed URLs
+            const embed = url.match(/youtube\.com\/(?:embed|v)\/([\w-]{11})/i);
+            if (embed) return embed[1];
+        } catch (e) {
+            // ignore parse errors
+        }
+        return null;
+    }
+
+    // Handle YouTube preview click
+    if (youtubePreviewBtn) {
+        youtubePreviewBtn.addEventListener('click', async () => {
+            const urlInput = document.getElementById('youtube-url');
+            const url = (urlInput?.value || '').trim();
+
+            if (!url) {
+                new Notification('error', 'Please paste a YouTube URL first.');
+                return;
+            }
+
+            const videoId = extractYouTubeId(url);
+            if (!videoId) {
+                new Notification('error', 'That does not look like a valid YouTube URL.');
+                return;
+            }
+
+            // Build embed URL
+            const embedUrl = `https://www.youtube.com/embed/${videoId}`;
+            youtubeIframe.src = embedUrl;
+            youtubePreview.classList.remove('hidden');
+
+            // Try to fetch a title via oEmbed (best-effort)
+            youtubePreviewTitle.textContent = '';
+            try {
+                const oembed = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
+                if (oembed.ok) {
+                    const data = await oembed.json();
+                    if (data && data.title) {
+                        youtubePreviewTitle.textContent = data.title;
+                    }
+                }
+            } catch (_) {
+                // no-op if blocked
+            }
+
+            new Notification('info', 'Showing YouTube preview.');
+        });
+    }
     youtubeForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = document.getElementById('youtube-url').value;
