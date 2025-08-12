@@ -1,6 +1,8 @@
+ 
+
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.templating import Jinja2Templates
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
@@ -20,6 +22,7 @@ import datetime
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse, parse_qs
+import unicodedata
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
 from fastapi.staticfiles import StaticFiles
@@ -95,6 +98,30 @@ def safe_filename(filename: str, extension: str) -> str:
     safe = safe.replace(' ', '_')
     # Limit length and add extension
     return f"{safe[:100]}.{extension}" if len(safe) > 100 else f"{safe}.{extension}"
+
+def sanitize_filename(name: str) -> str:
+    """Sanitize a filename stem:
+    - Normalize to NFC
+    - Remove control and invalid filesystem characters
+    - Collapse whitespace and trim
+    - Return ASCII-only by removing non-ASCII characters
+    """
+    if not isinstance(name, str):
+        name = str(name)
+    s = unicodedata.normalize('NFC', name)
+    # Remove invalid characters for Windows filesystems
+    s = re.sub(r'[\\/*?:"<>|]', ' ', s)
+    # Remove control chars
+    s = re.sub(r'[\x00-\x1f\x7f]', '', s)
+    # Collapse whitespace
+    s = re.sub(r'\s+', ' ', s).strip()
+    # Remove non-ASCII for safety in HTTP headers and cross-platform
+    s = s.encode('ascii', errors='ignore').decode('ascii')
+    # Fallback if empty
+    if not s:
+        s = 'download'
+    # Limit length
+    return s[:120]
 
 # TikTok API endpoints
 TIKTOK_API_DOMAIN = "https://api16-normal-c-useast1a.tiktokv.com"
@@ -392,6 +419,9 @@ def safe_filename(filename: str, default_extension: str = 'mp3') -> str:
 
 # Configure logging (console + rotating file)
 from logging.handlers import RotatingFileHandler
+from fastapi.middleware.cors import CORSMiddleware
+from urllib.parse import urlparse
+from schemas import ConvertResponse, ErrorResponse
 
 log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(name)s - %(message)s')
 
@@ -422,9 +452,81 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+# Root index route
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+# CORS (tight allowlist: adjust as needed)
+ALLOWED_ORIGINS = [
+    "http://127.0.0.1:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:5173",
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 # Create directories if they don't exist
 os.makedirs("downloads", exist_ok=True)
 os.makedirs("converted", exist_ok=True)
+
+# Simple in-memory job manager (can be swapped for Redis/DB later)
+import asyncio
+import uuid
+
+class Job:
+    def __init__(self, job_type: str):
+        self.id = str(uuid.uuid4())
+        self.type = job_type
+        self.state = "queued"  # queued|running|done|error
+        self.progress = 0.0
+        self.message = ""
+        self.result: dict | None = None
+        self.events: asyncio.Queue[str] = asyncio.Queue()
+        self.created_at = time.time()
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "state": self.state,
+            "progress": self.progress,
+            "message": self.message,
+            "result": self.result,
+            "type": self.type,
+        }
+
+jobs: dict[str, Job] = {}
+
+async def sse_event_generator(job: Job):
+    try:
+        # Send initial state
+        yield f"data: {json.dumps(job.to_dict())}\n\n"
+        while True:
+            msg = await job.events.get()
+            yield f"data: {msg}\n\n"
+    except asyncio.CancelledError:
+        return
+
+def job_emit(job: Job, progress: float | None = None, message: str | None = None, result: dict | None = None):
+    if progress is not None:
+        job.progress = float(max(0.0, min(100.0, progress)))
+    if message is not None:
+        job.message = message
+    if result is not None:
+        job.result = result
+    # Push event payload
+    payload = json.dumps(job.to_dict())
+    try:
+        job.events.put_nowait(payload)
+    except Exception:
+        pass
 
 def cleanup_folder(folder_path, max_files=5):
     """Keep only the most recent files in a folder, delete older ones"""
@@ -457,177 +559,82 @@ def run_ffmpeg_command(cmd):
     """Helper function to run ffmpeg commands with error handling"""
     try:
         # Use the full path to ffmpeg
-        ffmpeg_path = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-        
+        ffmpeg_path = r"C:\\ffmpeg-7.1.1-essentials_build\\bin\\ffmpeg.exe"
+
         # Ensure the command starts with ffmpeg path
-        if cmd[0].lower() == 'ffmpeg':
+        if isinstance(cmd, list) and cmd and str(cmd[0]).lower() == 'ffmpeg':
             cmd[0] = ffmpeg_path
-        
-        logger.info(f"Executing FFmpeg command: {' '.join(cmd)}")
-        
+
+        logger.info(f"Executing FFmpeg command: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+
         result = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             check=True,
-            shell=True  # Use shell=True to help with path resolution
+            shell=False,
+            timeout=900  # 15 minutes default timeout
         )
-        logger.info(f"FFmpeg command executed successfully")
+        logger.info("FFmpeg command executed successfully")
         return True, ""
+    except subprocess.TimeoutExpired:
+        error_msg = "FFmpeg timed out"
+        logger.error(f"{error_msg}\nCommand: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
+        return False, error_msg
     except subprocess.CalledProcessError as e:
         error_msg = f"FFmpeg error: {e.stderr}"
-        logger.error(f"{error_msg}\nCommand: {' '.join(cmd)}")
+        logger.error(f"{error_msg}\nCommand: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
         return False, error_msg
     except Exception as e:
         error_msg = f"Unexpected error: {str(e)}"
         logger.error(f"{error_msg}\nCommand: {' '.join(cmd) if isinstance(cmd, list) else cmd}")
         return False, error_msg
 
-@app.get("/")
-async def index():
-    return templates.TemplateResponse("index.html", {"request": {}})
-
-@app.get("/converted/{filename}")
-async def get_converted_file(filename: str):
-    """Serve converted files"""
-    file_path = f"converted/{filename}"
-    if not os.path.exists(file_path):
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    # Determine media type based on file extension
-    if filename.lower().endswith('.mp3'):
-        media_type = 'audio/mpeg'
-    elif filename.lower().endswith('.mp4'):
-        media_type = 'video/mp4'
-    else:
-        media_type = 'application/octet-stream'
-    
-    return FileResponse(
-        file_path,
-        filename=filename,
-        media_type=media_type
-    )
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {str(exc)}\n{traceback.format_exc()}")
     return JSONResponse(
         status_code=500,
-        content={"detail": f"An error occurred: {str(exc)}"}
+        content={
+            "detail": f"An error occurred: {str(exc)}",
+            "code": "internal_error"
+        }
     )
 
-@app.post("/convert")
-async def convert_video(
-    file: UploadFile = File(...),
-    output_format: str = Form("mp4"),  # 'mp4' or 'mp3'
-):
+def _is_allowed_host(url: str, allowed_hosts: set[str]) -> bool:
     try:
-        # Validate file
-        if not file.filename:
-            raise HTTPException(status_code=400, detail="No file uploaded")
-            
-        # Create directories if they don't exist
-        os.makedirs("downloads", exist_ok=True)
-        os.makedirs("converted", exist_ok=True)
-        
-        # Generate file paths with correct extensions
-        file_stem = Path(file.filename).stem
-        timestamp = int(time.time())
-        
-        # Ensure input file has a valid extension
-        input_ext = Path(file.filename).suffix.lower()
-        if not input_ext:
-            input_ext = '.mp4'  # Default extension if none provided
-            
-        input_path = f"downloads/{file_stem}_{timestamp}{input_ext}"
-        
-        # Ensure output file has the correct extension and naming based on output_format
-        output_ext = f".{output_format.lower()}"
-        if not output_ext.startswith('.'):
-            output_ext = f".{output_ext}"
-        
-        # Add '_audio' suffix for audio files
-        if output_ext.lower() == '.mp3':
-            output_filename = f"{file_stem}_audio{output_ext}"
-        else:
-            output_filename = f"{file_stem}{output_ext}"
-        output_path = f"converted/{output_filename}"
-        
-        # Save uploaded file
-        logger.info(f"Saving uploaded file to {input_path}")
-        with open(input_path, "wb") as buffer:
-            content = await file.read()
-            buffer.write(content)
+        p = urlparse(url)
+        host = (p.netloc or '').lower()
+        host = host.split(':')[0]  # strip port
+        return host in allowed_hosts
+    except Exception:
+        return False
 
-        # Build ffmpeg command based on output format
-        if output_format.lower() == 'mp3':
-            # Extract audio to MP3 (robust):
-            # -y overwrite, -vn drop video, libmp3lame codec for compatibility
-            cmd = [
-                'ffmpeg',
-                '-y',                      # Overwrite output if exists
-                '-i', input_path,          # Input file
-                '-vn',                     # No video
-                '-c:a', 'libmp3lame',      # MP3 encoder
-                '-b:a', '192k',            # Audio bitrate
-                output_path
-            ]
-        else:
-            # Convert video to MP4
-            cmd = [
-                'ffmpeg',
-                '-y',                      # Overwrite output if exists
-                '-i', input_path,          # Input file
-                '-c:v', 'libx264',        # Video codec
-                '-crf', '23',             # Constant Rate Factor (lower = better quality, 23 is default)
-                '-preset', 'medium',      # Encoding speed/compression ratio
-                '-c:a', 'aac',            # Audio codec
-                '-b:a', '192k',           # Audio bitrate
-                '-movflags', '+faststart', # Optimize for web streaming
-                output_path
-            ]
-        
-        logger.info(f"Starting conversion with command: {' '.join(cmd)}")
-        
-        # Run the ffmpeg command
-        success, error = run_ffmpeg_command(cmd)
-        
-        # Clean up the input file
-        if os.path.exists(input_path):
-            os.remove(input_path)
-            
-        if not success:
-            raise HTTPException(status_code=500, detail=f"Conversion failed: {error}")
-        
-        # Check if output file was created
-        if not os.path.exists(output_path):
-            raise HTTPException(status_code=500, detail="Conversion failed: Output file was not created")
-        
-        # Clean up old files in the converted folder (keep only 5 most recent)
-        cleanup_folder("converted", max_files=5)
-        
-        logger.info(f"Conversion successful: {output_path}")
-        
-        # Return JSON response with file info instead of auto-downloading
-        return {
-            "filename": output_filename,
-            "message": "Conversion successful",
-            "file_path": f"/converted/{output_filename}",
-            "file_type": output_format.lower()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Conversion error: {str(e)}\n{traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"An error occurred during conversion: {str(e)}"
-        )
+# Job management endpoints
+@app.post("/v1/jobs")
+async def create_job(job_type: str = Form("generic")):
+    job = Job(job_type)
+    jobs[job.id] = job
+    return {"id": job.id, "state": job.state, "type": job.type}
+
+@app.get("/v1/jobs/{job_id}")
+async def get_job(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job.to_dict()
+
+@app.get("/v1/jobs/{job_id}/events")
+async def job_events(job_id: str):
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return StreamingResponse(sse_event_generator(job), media_type="text/event-stream")
 
 @app.post("/download/tiktok")
-async def download_tiktok(request: Request):
+@app.post("/v1/download/tiktok")
+async def download_tiktok(request: Request, job_id: str | None = None):
     """Download TikTok video using tikwm.com API."""
     temp_path = None
     max_retries = 3
@@ -648,6 +655,16 @@ async def download_tiktok(request: Request):
             raise HTTPException(status_code=400, detail=str(e) or "Invalid request data")
         
         logger.info(f"=== Starting TikTok Download for URL: {url} ===")
+        job: Job | None = None
+        if job_id and job_id in jobs:
+            job = jobs[job_id]
+            job.state = "running"
+            job_emit(job, progress=0.0, message="Starting TikTok download")
+
+        # Validate allowed host for TikTok
+        allowed_tiktok_hosts = {"www.tiktok.com", "tiktok.com", "vm.tiktok.com", "t.tiktok.com"}
+        if urlparse(url).scheme in {"file"} or not _is_allowed_host(url, allowed_tiktok_hosts):
+            raise HTTPException(status_code=400, detail="Unsupported or unsafe TikTok URL host")
         
         # Extract video ID from URL (best-effort) and validate input URL
         video_id = get_tiktok_video_id(url)
@@ -779,11 +796,11 @@ async def download_tiktok(request: Request):
 
                 video_url = best_url or candidates[0]
                 
-                # Generate a safe filename
+                # Generate a sanitized filename stem and final path in downloads/
                 video_title = video_data.get('title', f'tiktok_{video_id}')
-                safe_title = re.sub(r'[^\w\s-]', '', video_title).strip()
-                safe_title = safe_title[:100]  # Limit length
-                filename = f"{safe_title}.mp4"
+                stem = sanitize_filename(video_title)
+                os.makedirs("downloads", exist_ok=True)
+                final_path = os.path.join("downloads", f"{stem}.mp4")
                 
                 # Download the video with progress tracking
                 logger.info(f"Downloading video from: {video_url}")
@@ -809,47 +826,69 @@ async def download_tiktok(request: Request):
                             if total_size > 0 and (downloaded_size * 100 // total_size) % 5 == 0:
                                 progress = (downloaded_size / total_size) * 100
                                 await log_progress(progress)
+                                if job:
+                                    job_emit(job, progress=progress, message=f"Downloading {progress:.1f}%")
                 
                 # Verify the file was downloaded correctly
                 if os.path.getsize(temp_path) == 0:
                     raise Exception("Downloaded file is empty")
                 
                 logger.info("Download completed successfully")
-                
+
                 # Add to download history
                 add_to_history({
                     'type': 'tiktok',
-                    'title': video_title,
+                    'title': stem,
                     'url': url,
-                    'filename': filename,
+                    'filename': f"{stem}.mp4",
                     'timestamp': int(time.time())
                 })
                 
-                # Clean up old files
-                cleanup_old_files()
+                # Move from temp to downloads and clean up old files
+                try:
+                    # Remove existing file if same name exists
+                    if os.path.exists(final_path):
+                        os.remove(final_path)
+                    shutil.move(temp_path, final_path)
+                    logger.info(f"Moved TikTok download to: {final_path}")
+                finally:
+                    # Ensure temp file is not left behind
+                    try:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
+                    except Exception:
+                        pass
+                cleanup_folder("downloads", max_files=5)
                 
                 # Return the file for download
+                if job:
+                    job.state = "done"
+                    job_emit(job, progress=100.0, message="TikTok download complete", result={"filename": f"{stem}.mp4"})
+
                 return FileResponse(
-                    temp_path,
-                    filename=filename,
+                    final_path,
+                    filename=f"{stem}.mp4",
                     media_type='video/mp4',
                     headers={
-                        'Content-Disposition': f'attachment; filename="{filename}"',
+                        'Content-Disposition': f'attachment; filename="{stem}.mp4"',
                         'Cache-Control': 'no-cache, no-store, must-revalidate',
                         'Pragma': 'no-cache',
                         'Expires': '0'
-                    },
-                    background=BackgroundTask(cleanup_temp_file, temp_path)
+                    }
                 )
                 
             except Exception as e:
                 if attempt == max_retries - 1:  # Last attempt
                     logger.error(f"All download attempts failed: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Failed to download TikTok video: {str(e)}")
                     raise
                 
                 logger.warning(f"Attempt {attempt + 1} failed: {str(e)}. Retrying...")
                 time.sleep(1)  # Wait before retrying
                 
+    except HTTPException as he:
+        # Preserve explicit HTTP errors like 400 for invalid hosts
+        raise he
     except Exception as e:
         # Clean up temp file if something went wrong
         if temp_path and os.path.exists(temp_path):
@@ -861,10 +900,15 @@ async def download_tiktok(request: Request):
         error_msg = f"Failed to download TikTok video: {str(e)}"
         logger.error(error_msg)
         logger.error(traceback.format_exc())
+        if job_id and job_id in jobs:
+            j = jobs[job_id]
+            j.state = "error"
+            job_emit(j, message=error_msg)
         raise HTTPException(status_code=500, detail=error_msg)
 
 @app.post("/download/youtube")
-async def download_youtube(request: Request):
+@app.post("/v1/download/youtube")
+async def download_youtube(request: Request, job_id: str | None = None):
     try:
         # Log the raw request data for debugging
         raw_body = await request.body()
@@ -886,9 +930,19 @@ async def download_youtube(request: Request):
             raise HTTPException(status_code=400, detail="URL is required")
             
         logger.info(f"Starting YouTube download for URL: {url}, format: {format_type}")
+
+        # Validate allowed host for YouTube
+        allowed_youtube_hosts = {"www.youtube.com", "youtube.com", "youtu.be", "m.youtube.com"}
+        if urlparse(url).scheme in {"file"} or not _is_allowed_host(url, allowed_youtube_hosts):
+            raise HTTPException(status_code=400, detail="Unsupported or unsafe YouTube URL host")
         
         # Create downloads directory if it doesn't exist
         os.makedirs("downloads", exist_ok=True)
+        job: Job | None = None
+        if job_id and job_id in jobs:
+            job = jobs[job_id]
+            job.state = "running"
+            job_emit(job, progress=0.0, message="Starting YouTube download")
         
         # Configure different options for video vs audio
         if format_type == "video":
@@ -982,6 +1036,7 @@ async def download_youtube(request: Request):
                 final_basename = sanitized_stem + desired_ext
                 final_path = os.path.join(dir_name, final_basename)
 
+                # File prepared; ready to return response payload
                 # If the found file path doesn't already match the sanitized final path, rename it
                 try:
                     if os.path.abspath(found_path) != os.path.abspath(final_path):
@@ -1042,16 +1097,15 @@ async def download_youtube(request: Request):
                 # Clean up old files in the downloads directory
                 cleanup_folder("downloads")
                 
-                return FileResponse(
-                    filename,
-                    filename=safe_name,
-                    media_type='video/mp4' if format_type == "video" else 'audio/mpeg',
-                    headers={
-                        "Content-Disposition": f"attachment; filename=\"{safe_name}\"",
-                        "Access-Control-Expose-Headers": "Content-Disposition"
-                    }
-                )
-                
+                if job:
+                    job.state = "done"
+                    job_emit(job, progress=100.0, message="YouTube download complete", result={"file_path": final_path})
+                safe_path_for_url = "/" + final_path.replace("\\", "/")
+                return {
+                    "filename": os.path.basename(final_path),
+                    "message": "Download successful",
+                    "file_path": safe_path_for_url
+                }
         except yt_dlp.DownloadError as e:
             error_msg = f"YouTube download error: {str(e)}"
             logger.error(error_msg)
