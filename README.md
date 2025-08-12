@@ -95,6 +95,62 @@ Create a `.env` file in the project root with any necessary environment variable
 ## 🧭 Why This Project?
 This app was built to make collecting reference clips and music fast and frustration-free. It’s designed to be easy for creators and solid for engineers reviewing the code. You’ll find clean architecture, safe file handling, robust logging, and a modern UI with thoughtful UX details.
 
+## Real-world use case
+
+You create. You need a trending clip or clean audio now.
+
+**What you do**
+- Paste a YouTube or TikTok link
+- Choose MP4 video or MP3 audio
+- Or drop a local file to extract the music
+
+**What the app does**
+- Shows metadata before download
+- Downloads TikTok without watermark
+- Extracts high-quality audio with FFmpeg
+- Streams the file with a safe filename
+- Cleans temporary files
+
+**Why it matters**
+- One tool instead of five
+- No fees
+- Built from zero to functional MVP in ~6 hours
+
+## What this project shows about me
+
+**Product sense**
+- I solve a real pain creators have and keep the flow tight
+
+**Ownership**
+- Blank repo to working app in one session
+- Clear scope, fast feedback loop, visible results
+
+**Engineering**
+- FastAPI backend with typed request and response models
+- Safe filename handling and format allowlist
+- Timeouts, logging, and input validation
+
+**Performance**
+- Streaming responses to avoid memory spikes
+- Background jobs for long tasks
+- Progress events ready to wire up
+
+**UX**
+- Paste link, pick format, click once
+- Real-time status and clear errors
+
+**Security and ethics**
+- Host allowlist
+- No path traversal
+- Local use intended for content you own or have rights to
+
+## Why hire me for this kind of work
+
+- I ship fast without cutting safety corners
+- I pick the simplest path that works
+- I write code and docs that other people can run today
+- I can extend this into queues, Docker, and cloud storage on a deadline
+
 ## 🏗️ How It Works
 - Client (Vanilla JS) sends requests to a FastAPI backend
 - Backend uses yt-dlp to fetch media and FFmpeg for conversions
