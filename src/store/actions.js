@@ -11,10 +11,16 @@ export const convertVideo = (payload) => async (dispatch) => {
 
 export const downloadYouTube = (payload) => async (dispatch) => {
     try {
-        await ipcRenderer.invoke('downloadYouTube', payload);
-        dispatch({ type: 'DOWNLOAD_YOUTUBE_SUCCESS' });
+        const result = await ipcRenderer.invoke('downloadYouTube', payload);
+        if (result && result.error) {
+            throw new Error(result.error);
+        }
+        dispatch({ type: 'DOWNLOAD_YOUTUBE_SUCCESS', payload: result });
+        return result;
     } catch (error) {
+        console.error('YouTube download error:', error);
         dispatch({ type: 'DOWNLOAD_YOUTUBE_ERROR', payload: error.message });
+        throw error;
     }
 };
 

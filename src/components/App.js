@@ -11,6 +11,9 @@ import {
     MessageBarType,
     Icon,
     AnimationStyles,
+    Checkbox,
+    Spinner,
+    SpinnerSize
 } from '@fluentui/react';
 import { useDispatch, useSelector } from 'react-redux';
 import { convertVideo, downloadYouTube, downloadTikTok } from '../store/actions';
@@ -23,6 +26,9 @@ const App = () => {
     const [outputFormat, setOutputFormat] = useState('mp4');
     const [progress, setProgress] = useState(0);
     const [message, setMessage] = useState(null);
+    const [copyrightChecked, setCopyrightChecked] = useState(false);
+    const [copyrightStatus, setCopyrightStatus] = useState('unverified'); // 'unverified', 'checking', 'verified', 'checking'
+    const [isDownloading, setIsDownloading] = useState(false);
 
     const handleConvert = async () => {
         if (!inputFile) {
@@ -56,34 +62,203 @@ const App = () => {
         }
     };
 
+    const checkCopyright = async (url) => {
+        if (!url) return false;
+        
+        setCopyrightStatus('checking');
+        try {
+            const result = await window.electron.media.youtube.checkCopyright(url);
+            const isVerified = result?.isCopyrightSafe || false;
+            setCopyrightStatus(isVerified ? 'verified' : 'unverified');
+            return isVerified;
+        } catch (error) {
+            console.error('Copyright check failed:', error);
+            setCopyrightStatus('unverified');
+            return false;
+        }
+    };
+
+    const extractVideoId = (url) => {
+        try {
+            const urlObj = new URL(url);
+            if (urlObj.hostname.includes('youtu.be')) {
+                return urlObj.pathname.slice(1);
+            }
+            return urlObj.searchParams.get('v') || url.split('v=')[1]?.split('&')[0];
+        } catch (e) {
+            return null;
+        }
+    };
+
     const handleYouTubeDownload = async () => {
         if (!videoUrl) {
             setMessage({
                 type: MessageBarType.error,
-                text: 'Please enter a YouTube URL'
+                text: 'Please enter a YouTube URL',
+                dismissButtonAriaLabel: 'Close',
+                onDismiss: () => setMessage(null)
             });
             return;
         }
 
+        const videoId = extractVideoId(videoUrl);
+        if (!videoId) {
+            setMessage({
+                type: MessageBarType.error,
+                text: 'Invalid YouTube URL. Please enter a valid URL in one of these formats:\n- https://www.youtube.com/watch?v=VIDEO_ID\n- https://youtu.be/VIDEO_ID',
+                dismissButtonAriaLabel: 'Close',
+                onDismiss: () => setMessage(null)
+            });
+            return;
+        }
+
+        // Check copyright if not already verified
+        if (!copyrightChecked) {
+            setMessage({
+                type: MessageBarType.info,
+                text: 'Verifying copyright status...',
+                dismissButtonAriaLabel: 'Close'
+            });
+            
+            try {
+                const isVerified = await checkCopyright(videoUrl);
+                if (!isVerified) {
+                    setMessage({
+                        type: MessageBarType.warning,
+                        text: 'Please verify copyright status before downloading',
+                        dismissButtonAriaLabel: 'Close',
+                        onDismiss: () => setMessage(null)
+                    });
+                    return;
+                }
+                setCopyrightChecked(true);
+            } catch (error) {
+                console.error('Copyright check failed:', error);
+                setMessage({
+                    type: MessageBarType.error,
+                    text: 'Failed to verify copyright status. Please try again.',
+                    dismissButtonAriaLabel: 'Close',
+                    onDismiss: () => setMessage(null)
+                });
+                return;
+            }
+        }
+
+        setIsDownloading(true);
+        setProgress(0);
         setMessage({
             type: MessageBarType.info,
-            text: 'Downloading YouTube video...'
+            text: 'Preparing download...',
+            dismissButtonAriaLabel: 'Close'
         });
 
         try {
-            await dispatch(downloadYouTube({
-                url: videoUrl,
-                format: outputFormat
-            }));
+            // Set up progress listener
+            const removeProgressListener = window.electron.onProgress((progress) => {
+                setProgress(progress.percent);
+                setMessage({
+                    type: MessageBarType.info,
+                    text: `Downloading... ${Math.round(progress.percent)}%`
+                });
+            });
+
+            // Start the download
+            // Show initial download message
+            setMessage({
+                type: MessageBarType.info,
+                text: 'Starting download...',
+                dismissButtonAriaLabel: 'Close'
+            });
+
+            try {
+                const result = await window.electron.downloadYoutube({ 
+                    url: videoUrl, 
+                    format: outputFormat 
+                });
+                
+                if (result && result.success) {
+                    setMessage({
+                        type: MessageBarType.success,
+                        text: 'Download completed successfully!',
+                        dismissButtonAriaLabel: 'Close',
+                        onDismiss: () => setMessage(null)
+                    });
+
+                    // Open the download folder
+                    try {
+                        await window.electron.shell.showItemInFolder(result.outputPath);
+                    } catch (folderError) {
+                        console.warn('Could not open download folder:', folderError);
+                        // Don't fail the download if we can't open the folder
+                    }
+                } else {
+                    throw new Error('Download completed but no success flag was returned');
+                }
+            } catch (error) {
+                console.error('Download failed:', error);
+                
+                // Default error message
+                let errorMessage = 'An error occurred while downloading the video. Please try again.';
+                
+                // More specific error messages based on the error
+                if (error.message.includes('Requested format is not available')) {
+                    errorMessage = 'The requested video format is not available. Try a different format or video.';
+                } else if (error.message.includes('Video unavailable') || 
+                          error.message.includes('This video is unavailable')) {
+                    errorMessage = 'This video is not available. It may have been removed, made private, or is not available in your country.';
+                } else if (error.message.includes('Private video')) {
+                    errorMessage = 'This video is private and cannot be downloaded.';
+                } else if (error.message.includes('age restricted') || 
+                          error.message.includes('Sign in to confirm your age')) {
+                    errorMessage = 'This video is age-restricted and cannot be downloaded.';
+                } else if (error.message.includes('timed out')) {
+                    errorMessage = 'The download timed out. Please check your internet connection and try again.';
+                } else if (error.message.includes('copyright')) {
+                    errorMessage = 'Unable to verify copyright status for this video.';
+                } else if (error.message.includes('Invalid YouTube URL')) {
+                    errorMessage = 'The YouTube URL is not valid. Please check the URL and try again.';
+                }
+                
+                setMessage({
+                    type: MessageBarType.error,
+                    text: errorMessage,
+                    dismissButtonAriaLabel: 'Close',
+                    onDismiss: () => setMessage(null)
+                });
+            } finally {
+                setIsDownloading(false);
+                setProgress(0);
+            }
+        } catch (error) {
+            console.error('Download error:', error);
+            
+            // Default error message
+            let errorMessage = 'An error occurred while downloading the video. Please try again.';
+            
+            // More specific error messages based on the error
+            if (error.message.includes('Requested format is not available')) {
+                errorMessage = 'The requested video format is not available. Try a different format or video.';
+            } else if (error.message.includes('Video unavailable') || 
+                      error.message.includes('This video is unavailable')) {
+                errorMessage = 'This video is not available. It may have been removed, made private, or is not available in your country.';
+            } else if (error.message.includes('Private video')) {
+                errorMessage = 'This video is private and cannot be downloaded.';
+            } else if (error.message.includes('age restricted') || 
+                      error.message.includes('Sign in to confirm your age')) {
+                errorMessage = 'This video is age-restricted and cannot be downloaded.';
+            } else if (error.message.includes('timed out')) {
+                errorMessage = 'The download timed out. Please check your internet connection and try again.';
+            } else if (error.message.includes('copyright')) {
+                errorMessage = 'Unable to verify copyright status for this video.';
+            } else if (error.message.includes('Invalid YouTube URL')) {
+                errorMessage = 'The YouTube URL is not valid. Please check the URL and try again.';
+            }
             
             setMessage({
-                type: MessageBarType.success,
-                text: 'Download complete!'
-            });
-        } catch (error) {
-            setMessage({
                 type: MessageBarType.error,
-                text: 'Error downloading video: ' + error.message
+                text: errorMessage,
+                dismissButtonAriaLabel: 'Close',
+                onDismiss: () => setMessage(null)
             });
         }
     };
@@ -119,7 +294,7 @@ const App = () => {
         }
     };
 
-    const formatOptions: IChoiceGroupOption[] = [
+    const formatOptions = [
         { key: 'mp4', text: 'MP4 (Video)' },
         { key: 'mp3', text: 'MP3 (Audio)' }
     ];
@@ -218,7 +393,7 @@ const App = () => {
                         <ChoiceGroup
                             options={formatOptions}
                             selectedKey={outputFormat}
-                            onChange={(e, option) => setOutputFormat(option.key as string)}
+                            onChange={(e, option) => setOutputFormat(option.key)}
                         />
                         <Button
                             text="Convert"
@@ -245,11 +420,96 @@ const App = () => {
                             value={videoUrl}
                             onChange={(e, newValue) => setVideoUrl(newValue || '')}
                         />
-                        <ChoiceGroup
-                            options={formatOptions}
-                            selectedKey={outputFormat}
-                            onChange={(e, option) => setOutputFormat(option.key as string)}
-                        />
+                        <div style={{ margin: '15px 0' }}>
+                            <Label>Output Format:</Label>
+                            <Dropdown
+                                selectedKey={downloadFormat}
+                                onChange={(e, item) => setDownloadFormat(item.key)}
+                                placeholder="Select format"
+                                options={[
+                                    { key: 'mp4', text: 'MP4 (Video)' },
+                                    { key: 'mp3', text: 'MP3 (Audio Only)' }
+                                ]}
+                                disabled={isDownloading}
+                            />
+                        </div>
+
+                        <div style={{ margin: '15px 0' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 8 }}>
+                                <Checkbox 
+                                    label="I verify that I have the right to use this content"
+                                    checked={copyrightChecked}
+                                    onChange={async (ev, checked) => {
+                                        if (checked) {
+                                            setCopyrightStatus('checking');
+                                            try {
+                                                const isVerified = await checkCopyright(videoUrl);
+                                                setCopyrightStatus(isVerified ? 'verified' : 'unverified');
+                                                setCopyrightChecked(isVerified);
+                                                
+                                                if (!isVerified) {
+                                                    setMessage({
+                                                        type: MessageBarType.warning,
+                                                        text: 'Unable to verify copyright. Please ensure you have the right to use this content.',
+                                                        dismissButtonAriaLabel: 'Close',
+                                                        onDismiss: () => setMessage(null)
+                                                    });
+                                                }
+                                            } catch (error) {
+                                                console.error('Copyright check failed:', error);
+                                                setCopyrightStatus('unverified');
+                                                setCopyrightChecked(false);
+                                                setMessage({
+                                                    type: MessageBarType.error,
+                                                    text: 'Failed to verify copyright. Please try again.',
+                                                    dismissButtonAriaLabel: 'Close',
+                                                    onDismiss: () => setMessage(null)
+                                                });
+                                            }
+                                        } else {
+                                            setCopyrightChecked(false);
+                                            setCopyrightStatus('unverified');
+                                        }
+                                    }}
+                                    disabled={isDownloading || !videoUrl}
+                                    styles={{
+                                        root: { margin: 0 },
+                                        text: { fontWeight: 'normal' },
+                                        checkbox: { marginTop: 0 }
+                                    }}
+                                />
+                                {copyrightStatus === 'checking' && (
+                                    <Spinner size={SpinnerSize.small} style={{ marginLeft: 10 }} />
+                                )}
+                                {copyrightStatus === 'verified' && (
+                                    <Icon 
+                                        iconName="CheckMark" 
+                                        style={{ 
+                                            color: 'green', 
+                                            marginLeft: 10,
+                                            fontSize: 16,
+                                            fontWeight: 'bold'
+                                        }} 
+                                    />
+                                )}
+                                {copyrightStatus === 'unverified' && (
+                                    <Icon 
+                                        iconName="ErrorBadge" 
+                                        style={{ 
+                                            color: 'orange', 
+                                            marginLeft: 10,
+                                            fontSize: 16
+                                        }} 
+                                    />
+                                )}
+                            </div>
+                            <Text variant="small" styles={{ root: { color: theme.palette.neutralSecondary, marginLeft: 26 } }}>
+                                {copyrightChecked 
+                                    ? 'Copyright verified. You may proceed with the download.'
+                                    : 'Please verify that you have the right to use this content before downloading.'}
+                            </Text>
+                        </div>
+
                         <Button
                             text="Download"
                             onClick={handleYouTubeDownload}

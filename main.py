@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Bac
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 from pydantic import BaseModel
 import os
@@ -11,38 +12,54 @@ import logging
 import tempfile
 import time
 import shutil
-from typing import Optional, Dict, List
-from pathlib import Path
+import uuid
 import subprocess
 import urllib.parse
 import mimetypes
 import datetime
-import requests
-from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs
-
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from fastapi.templating import Jinja2Templates
-import yt_dlp as yt_dlp
-import os
-import logging
-import shutil
-import uuid
-import subprocess
-import json
-import re
-import time
 import traceback
+from typing import Optional, Dict, List
 from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, urljoin, urlunparse
+import yt_dlp
+import instaloader
+import zipfile
+from dotenv import load_dotenv
+from logging.handlers import RotatingFileHandler
+from converter import MediaConverter
+
+# Load environment variables from .env if present (for optional integrations)
+load_dotenv()
 
 # Ensure the downloads directory exists
 DOWNLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloads")
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# FFmpeg configuration - try to find FFmpeg in common locations
+def get_ffmpeg_path():
+    """Find FFmpeg executable path."""
+    common_paths = [
+        r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe",
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        "ffmpeg",  # System PATH
+    ]
+    
+    for path in common_paths:
+        try:
+            result = subprocess.run([path, "-version"], capture_output=True, timeout=5)
+            if result.returncode == 0:
+                return path
+        except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+            continue
+    
+    return "ffmpeg"  # Fallback to system PATH
+
+FFMPEG_PATH = get_ffmpeg_path()
+
+# Load environment variables from .env if present (for optional integrations)
+load_dotenv()
 
 def extract_tiktok_video_id(url: str) -> str:
     """Extract video ID from various TikTok URL formats."""
@@ -87,14 +104,6 @@ def cleanup_old_files(max_files: int = 5):
     except Exception as e:
         logger.error(f"Error in cleanup_old_files: {str(e)}")
 
-def safe_filename(filename: str, extension: str) -> str:
-    """Create a safe filename by removing invalid characters."""
-    # Remove invalid filename characters
-    safe = re.sub(r'[\\/*?:"<>|]', '', filename)
-    # Replace spaces with underscores
-    safe = safe.replace(' ', '_')
-    # Limit length and add extension
-    return f"{safe[:100]}.{extension}" if len(safe) > 100 else f"{safe}.{extension}"
 
 # TikTok API endpoints
 TIKTOK_API_DOMAIN = "https://api16-normal-c-useast1a.tiktokv.com"
@@ -105,9 +114,6 @@ TIKTOK_VIDEO_INFO = f"{TIKTOK_API_DOMAIN}/aweme/v1/aweme/detail/"
 # TikWM requires POST to /api/ with form data: url=<tiktok_url>
 TIKWM_API = "https://www.tikwm.com/api/"
 
-# Download folder
-DOWNLOAD_FOLDER = "downloads"
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 
 # Initialize logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -244,30 +250,6 @@ def _try_tiktok_api(video_id: str, headers: dict) -> dict:
 
 def _try_tiktok_embed(video_id: str, headers: dict) -> dict:
     """Try to get video info from embed page."""
-    try:
-        url = f'https://www.tiktok.com/oembed?url=https://www.tiktok.com/@tiktok/video/{video_id}'
-        response = requests.get(url, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            data = response.json()
-            return {
-                'status': 'success',
-                'data': {
-                    'aweme_id': video_id,
-                    'desc': data.get('title', ''),
-                    'author': data.get('author_name', ''),
-                    'video': {
-                        'play_addr': {
-                            'url_list': [data.get('thumbnail_url', '').replace('_720x720', '')]
-                        },
-                        'cover': data.get('thumbnail_url', '')
-                    }
-                }
-            }
-    except Exception as e:
-        logger.warning(f"TikTok oEmbed method failed: {str(e)}")
-    
-    return {'status': 'error'}
 
 def _try_tiktok_oembed(video_id: str, headers: dict) -> dict:
     """Try to get video info from oEmbed endpoint."""
@@ -284,15 +266,24 @@ def _try_tiktok_oembed(video_id: str, headers: dict) -> dict:
                 video_data = data.get('ItemModule', {}).get(video_id, {})
                 
                 if video_data:
-                    return {
-                        'status': 'success',
-                        'data': {
-                            'aweme_id': video_id,
-                            'desc': video_data.get('desc', ''),
-                            'author': video_data.get('author', ''),
-                            'video': {
-                                'play_addr': {
-                                    'url_list': [video_data.get('video', {}).get('downloadAddr', '')]
+                    output_file_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+                    if os.path.exists(output_file_path):
+                        abs_out = os.path.abspath(output_file_path)
+                        return {
+                            "success": True,
+                            "filePath": abs_out,
+                            "message": "File already exists"
+                        }
+                    else:
+                        return {
+                            'status': 'success',
+                            'data': {
+                                'aweme_id': video_id,
+                                'desc': video_data.get('desc', ''),
+                                'author': video_data.get('author', ''),
+                                'video': {
+                                    'play_addr': {
+                                        'url_list': [video_data.get('video', {}).get('downloadAddr', '')]
                                 },
                                 'cover': video_data.get('covers', [''])[0]
                             },
@@ -422,11 +413,136 @@ app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
 
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# File serving endpoint for downloaded files
+@app.get("/file/{file_path:path}")
+async def serve_file(file_path: str):
+    """Serve a downloaded file"""
+    try:
+        # Decode the file path
+        import urllib.parse
+        decoded_path = urllib.parse.unquote(file_path)
+        
+        if os.path.exists(decoded_path) and os.path.isfile(decoded_path):
+            return FileResponse(decoded_path)
+        else:
+            raise HTTPException(status_code=404, detail="File not found")
+    except Exception as e:
+        logger.error(f"Error serving file {file_path}: {e}")
+        raise HTTPException(status_code=404, detail="File not found")
+
+# YouTube download endpoint
+@app.get("/youtube/download")
+async def download_youtube_endpoint(url: str, format: str = "mp3"):
+    """
+    Download a YouTube video in the specified format.
+    
+    Args:
+        url: YouTube video URL
+        format: Output format (mp3 or mp4)
+        
+    Returns:
+        JSON response with download status and file path
+    """
+    try:
+        # Create a unique base name
+        video_id = url.split("v=")[-1].split("&")[0]
+        timestamp = int(time.time())
+        base = f"youtube_{video_id}_{timestamp}"
+        
+        # Build robust yt-dlp options
+        ydl_opts = {
+            # Ignore any global/user yt-dlp config files that may set incompatible formats
+            'ignoreconfig': True,
+            'quiet': False,
+            'no_warnings': True,
+            'noplaylist': True,
+            'extract_flat': False,
+            # Ensure ffmpeg can be found (from our app's detection)
+            'ffmpeg_location': FFMPEG_PATH,
+            # Use JavaScript runtime for YouTube extraction
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios'],
+                }
+            },
+            # Add user agent to avoid 403 errors
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            # Use cookies if available (optional, helps with some videos)
+            'nocheckcertificate': True,
+        }
+
+        if format.lower() == 'mp3':
+            # Audio-only with ffmpeg extraction to MP3
+            filepath = os.path.join(DOWNLOAD_FOLDER, f"{base}.mp3")
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'outtmpl': filepath,
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'prefer_ffmpeg': True,
+            })
+        else:
+            # Video: prefer MP4 (progressive or merged), with fallbacks
+            # Try best MP4 video + M4A audio, then best progressive MP4, then any best
+            filepath = os.path.join(DOWNLOAD_FOLDER, f"{base}.mp4")
+            ydl_opts.update({
+                'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best',
+                'outtmpl': filepath,
+                'merge_output_format': 'mp4',
+                'prefer_ffmpeg': True,
+            })
+
+        def _attempt_download(opts):
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(url, download=True)
+
+        info = None
+        try:
+            info = _attempt_download(ydl_opts)
+        except Exception as e1:
+            logger.warning(f"Primary yt-dlp format selection failed: {e1}. Retrying with generic fallback...")
+            # Fallback to the most generic selectors
+            fallback_opts = dict(ydl_opts)
+            if format.lower() == 'mp3':
+                fallback_opts['format'] = 'bestaudio/best'
+            else:
+                fallback_opts['format'] = 'best'
+            info = _attempt_download(fallback_opts)
+
+        filename = os.path.basename(filepath)
+        return {
+            "success": True,
+            "message": "Download completed successfully",
+            "filePath": filepath,
+            "filename": filename,
+            "title": info.get('title', 'video')
+        }
+        
+    except Exception as e:
+        logger.error(f"YouTube download error: {str(e)}")
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "Failed to download video"
+        }
+
 # Create directories if they don't exist
 os.makedirs("downloads", exist_ok=True)
 os.makedirs("converted", exist_ok=True)
 
-def cleanup_folder(folder_path, max_files=5):
+def cleanup_folder(folder_path, max_files=5, exclude_file=None):
     """Keep only the most recent files in a folder, delete older ones"""
     try:
         if not os.path.exists(folder_path):
@@ -437,6 +553,9 @@ def cleanup_folder(folder_path, max_files=5):
         for filename in os.listdir(folder_path):
             file_path = os.path.join(folder_path, filename)
             if os.path.isfile(file_path):
+                # Skip the excluded file
+                if exclude_file and os.path.abspath(file_path) == os.path.abspath(exclude_file):
+                    continue
                 files.append((file_path, os.path.getmtime(file_path)))
         
         # Sort by modification time (newest first)
@@ -456,12 +575,9 @@ def cleanup_folder(folder_path, max_files=5):
 def run_ffmpeg_command(cmd):
     """Helper function to run ffmpeg commands with error handling"""
     try:
-        # Use the full path to ffmpeg
-        ffmpeg_path = r"C:\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-        
         # Ensure the command starts with ffmpeg path
         if cmd[0].lower() == 'ffmpeg':
-            cmd[0] = ffmpeg_path
+            cmd[0] = FFMPEG_PATH
         
         logger.info(f"Executing FFmpeg command: {' '.join(cmd)}")
         
@@ -609,11 +725,13 @@ async def convert_video(
         
         logger.info(f"Conversion successful: {output_path}")
         
-        # Return JSON response with file info instead of auto-downloading
+        # Return JSON response expected by renderer
+        abs_out = os.path.abspath(output_path)
         return {
+            "success": True,
             "filename": output_filename,
             "message": "Conversion successful",
-            "file_path": f"/converted/{output_filename}",
+            "filePath": abs_out,
             "file_type": output_format.lower()
         }
         
@@ -828,19 +946,30 @@ async def download_tiktok(request: Request):
                 # Clean up old files
                 cleanup_old_files()
                 
-                # Return the file for download
-                return FileResponse(
-                    temp_path,
-                    filename=filename,
-                    media_type='video/mp4',
-                    headers={
-                        'Content-Disposition': f'attachment; filename="{filename}"',
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                        'Expires': '0'
-                    },
-                    background=BackgroundTask(cleanup_temp_file, temp_path)
-                )
+                # Move temp file into downloads with sanitized name, keep it, and return JSON
+                os.makedirs('downloads', exist_ok=True)
+                dest_path = os.path.join('downloads', filename)
+                try:
+                    if os.path.abspath(temp_path) != os.path.abspath(dest_path):
+                        if os.path.exists(dest_path):
+                            os.remove(dest_path)
+                        shutil.move(temp_path, dest_path)
+                    else:
+                        # Already in place
+                        pass
+                except Exception as e:
+                    logger.warning(f"Move failed, keeping temp file: {e}")
+                    dest_path = temp_path
+
+                # Clean up old files but keep most recent 5
+                cleanup_folder('downloads', max_files=5)
+
+                return {
+                    "success": True,
+                    "filePath": os.path.abspath(dest_path),
+                    "title": video_title,
+                    "format": 'mp4'
+                }
                 
             except Exception as e:
                 if attempt == max_retries - 1:  # Last attempt
@@ -879,7 +1008,14 @@ async def download_youtube(request: Request):
         logger.info(f"Received request data: {data}")
         
         url = data.get('url')
-        format_type = data.get('format', 'video')
+        raw_format = (data.get('format') or 'mp4')
+        normalized = str(raw_format).strip().lower()
+        if normalized in ['video', 'mp4']:
+            format_type = 'video'
+        elif normalized in ['audio', 'mp3']:
+            format_type = 'audio'
+        else:
+            format_type = 'video'
         
         if not url:
             logger.error("No URL provided in request")
@@ -900,7 +1036,7 @@ async def download_youtube(request: Request):
                     'key': 'FFmpegVideoConvertor',
                     'preferedformat': 'mp4',
                 }],
-                'ffmpeg_location': r"C:\\ffmpeg-7.1.1-essentials_build\\bin",
+                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
                 'logger': logging.getLogger(__name__),
                 'progress_hooks': [
                     lambda d: logger.info(f"Video download progress: {d.get('_percent_str', '')} - {d.get('_speed_str', '')}")
@@ -918,7 +1054,7 @@ async def download_youtube(request: Request):
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'ffmpeg_location': r"C:\\ffmpeg-7.1.1-essentials_build\\bin",
+                'ffmpeg_location': os.path.dirname(FFMPEG_PATH) if os.path.dirname(FFMPEG_PATH) else None,
                 'logger': logging.getLogger(__name__),
                 'progress_hooks': [
                     lambda d: logger.info(f"Audio download progress: {d.get('_percent_str', '')} - {d.get('_speed_str', '')}")
@@ -930,132 +1066,143 @@ async def download_youtube(request: Request):
                 'noplaylist': True,    # Download only the video, not the whole playlist
             }
         
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                logger.info("Extracting video info...")
-                info = ydl.extract_info(url, download=True)
-                logger.info(f"Video info: {info.get('title', 'Unknown')}")
-                
-                prepared = ydl.prepare_filename(info)
-                logger.info(f"Prepared filename (pre-postprocessing): {prepared}")
+        attempts = [ydl_opts]
+        if format_type == "video":
+            fallback_opts = dict(ydl_opts)
+            fallback_opts['format'] = 'bestvideo+bestaudio/best'
+            fallback_opts.setdefault('merge_output_format', 'mp4')
+            fallback_opts.setdefault('postprocessors', [{
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }])
+            attempts.append(fallback_opts)
 
+        info = None
+        prepared = None
+        dir_name = 'downloads'
+        last_error = None
+
+        for attempt_index, opts in enumerate(attempts, start=1):
+            try:
+                attempt_label = "primary" if attempt_index == 1 else f"fallback #{attempt_index - 1}"
+                logger.info(f"Extracting video info... ({attempt_label})")
+                with yt_dlp.YoutubeDL(opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    logger.info(f"Video info: {info.get('title', 'Unknown')}")
+
+                    prepared = ydl.prepare_filename(info)
+                    logger.info(f"Prepared filename (pre-postprocessing): {prepared}")
                 dir_name = os.path.dirname(prepared) or 'downloads'
-                orig_base = os.path.basename(prepared)
-                title_stem = os.path.splitext(orig_base)[0]
-
-                # Desired extension after post-processing
-                desired_ext = '.mp4' if format_type == 'video' else '.mp3'
-
-                # After yt-dlp postprocessing, the extension may have changed (e.g., to .mp3)
-                # Search the downloads directory for a file that matches the title stem
-                try:
-                    candidates = os.listdir(dir_name)
-                except FileNotFoundError:
-                    candidates = []
-
-                logger.info(f"Directory contents after download: {candidates}")
-
-                def find_output_file():
-                    lower_stem = title_stem.lower()
-                    preferred = None
-                    fallback = None
-                    for f in candidates:
-                        f_lower = f.lower()
-                        if f_lower.startswith(lower_stem):
-                            full = os.path.join(dir_name, f)
-                            # Prefer desired extension
-                            if f_lower.endswith(desired_ext):
-                                return full
-                            # Keep first match as fallback
-                            if fallback is None:
-                                fallback = full
-                    return preferred or fallback
-
-                found_path = find_output_file()
-                if not found_path:
-                    error_msg = f"Downloaded file not found for title: {title_stem} in {dir_name}"
-                    logger.error(error_msg)
-                    raise HTTPException(status_code=500, detail=error_msg)
-
-                # Compute sanitized final name with correct extension
-                sanitized_stem = sanitize_filename(title_stem)
-                final_basename = sanitized_stem + desired_ext
-                final_path = os.path.join(dir_name, final_basename)
-
-                # If the found file path doesn't already match the sanitized final path, rename it
-                try:
-                    if os.path.abspath(found_path) != os.path.abspath(final_path):
-                        # If destination exists, remove it to avoid replace errors
-                        if os.path.exists(final_path):
-                            os.remove(final_path)
-                        os.rename(found_path, final_path)
-                        logger.info(f"Renamed output file to sanitized name: {final_path}")
-                except Exception as e:
-                    logger.warning(f"Could not rename file to sanitized name: {e}. Using found file path.")
-                    final_path = found_path
-
-                filename = final_path
-                abs_path = os.path.abspath(filename)
-                logger.info(f"Resolved output filename: {filename}")
-                logger.info(f"Absolute path: {abs_path}")
-                
-                # Check if file exists (case-insensitive on Windows)
-                if not os.path.exists(filename):
-                    # Try to find the file with a different case
-                    dir_path = os.path.dirname(filename)
-                    file_name = os.path.basename(filename)
-                    
-                    # List all files in the directory
-                    try:
-                        files = os.listdir(dir_path)
-                        logger.info(f"Directory contents: {files}")
-                        
-                        # Try to find a matching file (case-insensitive)
-                        for f in files:
-                            if f.lower() == file_name.lower():
-                                filename = os.path.join(dir_path, f)
-                                logger.info(f"Found matching file with different case: {filename}")
-                                break
-                    except Exception as e:
-                        logger.error(f"Error listing directory contents: {str(e)}")
-                    
-                    # If we still can't find the file, raise an error
-                    if not os.path.exists(filename):
-                        error_msg = f"Downloaded file not found at: {filename}"
-                        logger.error(error_msg)
-                        raise HTTPException(status_code=500, detail=error_msg)
-                
-                # Get a safe version of the filename for headers
-                safe_name = safe_filename(
-                    os.path.basename(filename),
-                    default_extension='mp4' if format_type == 'video' else 'mp3'
+                break
+            except yt_dlp.DownloadError as e:
+                last_error = e
+                logger.warning(
+                    f"YouTube download attempt {attempt_index} with format '{opts.get('format')}' failed: {e}"
                 )
-                
-                logger.info(f"Sending file response for: {filename} (safe name: {safe_name})")
-                
-                # Ensure the file exists and is readable
-                if not os.path.exists(filename):
-                    error_msg = f"File not found after download: {filename}"
-                    logger.error(error_msg)
-                    raise HTTPException(status_code=500, detail=error_msg)
-                
-                # Clean up old files in the downloads directory
-                cleanup_folder("downloads")
-                
-                return FileResponse(
-                    filename,
-                    filename=safe_name,
-                    media_type='video/mp4' if format_type == "video" else 'audio/mpeg',
-                    headers={
-                        "Content-Disposition": f"attachment; filename=\"{safe_name}\"",
-                        "Access-Control-Expose-Headers": "Content-Disposition"
-                    }
-                )
-                
-        except yt_dlp.DownloadError as e:
-            error_msg = f"YouTube download error: {str(e)}"
+                info = None
+                continue
+
+        if info is None or prepared is None:
+            error_msg = f"YouTube download error: {last_error}" if last_error else "YouTube download error"
+            logger.error(error_msg)
+            raise HTTPException(status_code=500, detail=str(last_error) if last_error else error_msg)
+
+        orig_base = os.path.basename(prepared)
+        title_stem = os.path.splitext(orig_base)[0]
+
+        # Desired extension after post-processing
+        desired_ext = '.mp4' if format_type == 'video' else '.mp3'
+
+        # After yt-dlp postprocessing, the extension may have changed (e.g., to .mp3)
+        # Search the downloads directory for a file that matches the title stem
+        try:
+            candidates = os.listdir(dir_name)
+        except FileNotFoundError:
+            candidates = []
+
+        logger.info(f"Directory contents after download: {candidates}")
+
+        def find_output_file():
+            lower_stem = title_stem.lower()
+            preferred_match = None
+            fallback_match = None
+            for f in candidates:
+                f_lower = f.lower()
+                if f_lower.startswith(lower_stem):
+                    full = os.path.join(dir_name, f)
+                    if f_lower.endswith(desired_ext):
+                        preferred_match = full
+                        break
+                    if fallback_match is None:
+                        fallback_match = full
+            return preferred_match or fallback_match
+
+        found_path = find_output_file()
+        if not found_path:
+            error_msg = f"Downloaded file not found for title: {title_stem} in {dir_name}"
             logger.error(error_msg)
             raise HTTPException(status_code=500, detail=error_msg)
+
+        # Compute sanitized final name with correct extension
+        sanitized_stem = sanitize_filename(title_stem)
+        final_basename = sanitized_stem + desired_ext
+        final_path = os.path.join(dir_name, final_basename)
+
+        # If the found file path doesn't already match the sanitized final path, rename it
+        try:
+            if os.path.abspath(found_path) != os.path.abspath(final_path):
+                if os.path.exists(final_path):
+                    os.remove(final_path)
+                os.rename(found_path, final_path)
+                logger.info(f"Renamed output file to sanitized name: {final_path}")
+        except Exception as e:
+            logger.warning(f"Could not rename file to sanitized name: {e}. Using found file path.")
+            final_path = found_path
+
+        filename = final_path
+        abs_path = os.path.abspath(filename)
+        logger.info(f"Resolved output filename: {filename}")
+        logger.info(f"Absolute path: {abs_path}")
+
+        # Check if file exists (case-insensitive on Windows)
+        if not os.path.exists(filename):
+            dir_path = os.path.dirname(filename)
+            file_name = os.path.basename(filename)
+            try:
+                files = os.listdir(dir_path)
+                logger.info(f"Directory contents: {files}")
+                for f in files:
+                    if f.lower() == file_name.lower():
+                        filename = os.path.join(dir_path, f)
+                        logger.info(f"Found matching file with different case: {filename}")
+                        break
+            except Exception as e:
+                logger.error(f"Error listing directory contents: {str(e)}")
+
+            if not os.path.exists(filename):
+                error_msg = f"Downloaded file not found at: {filename}"
+                logger.error(error_msg)
+                raise HTTPException(status_code=500, detail=error_msg)
+
+        safe_name = safe_filename(
+            os.path.basename(filename),
+            default_extension='mp4' if format_type == 'video' else 'mp3'
+        )
+
+        logger.info(f"Sending file response for: {filename} (safe name: {safe_name})")
+
+        if not os.path.exists(filename):
+            error_msg = f"File not found after download: {filename}"
+            logger.error(error_msg)
+            raise HTTPException(status_code=500, detail=error_msg)
+
+        cleanup_folder("downloads")
+        return {
+            "success": True,
+            "filePath": os.path.abspath(filename),
+            "title": info.get('title') or os.path.splitext(os.path.basename(filename))[0],
+            "format": 'mp4' if format_type == 'video' else 'mp3'
+        }
             
     except HTTPException as he:
         logger.error(f"HTTP Exception: {he.detail}")
@@ -1070,3 +1217,441 @@ async def download_youtube(request: Request):
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
     finally:
         logger.info("YouTube download request completed")
+
+
+@app.post("/download/instagram")
+async def download_instagram(request: Request):
+    try:
+        data = await request.json()
+        url = (data.get('url') or '').strip()
+        if not url:
+            raise HTTPException(status_code=400, detail="URL is required")
+
+        raw_format = (data.get('format') or 'mp4')
+        normalized = str(raw_format).strip().lower()
+        if normalized in ['video', 'mp4']:
+            format_type = 'video'
+        elif normalized in ['audio', 'mp3']:
+            format_type = 'audio'
+        else:
+            format_type = 'video'
+
+        logger.info(f"Starting Instagram download for URL: {url}, format: {format_type}")
+        os.makedirs("downloads", exist_ok=True)
+
+        base = f"instagram_{int(time.time())}_{uuid.uuid4().hex[:8]}"
+        outtmpl = os.path.join("downloads", base + ".%(ext)s")
+
+        ydl_opts = {
+            'ignoreconfig': True,
+            'quiet': False,
+            'no_warnings': False,
+            'noplaylist': True,
+            'outtmpl': outtmpl,
+            'ffmpeg_location': FFMPEG_PATH,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            },
+            'extractor_args': {
+                'instagram': {
+                    'api_version': 'v1',
+                }
+            },
+            'age_limit': None,
+            'skip_unavailable_fragments': True,
+        }
+        
+        cookies_file = os.path.join(os.getcwd(), 'instagram_cookies.txt')
+        if os.path.exists(cookies_file):
+            ydl_opts['cookiefile'] = cookies_file
+            logger.info(f"Using cookies from {cookies_file}")
+
+        if format_type == 'audio':
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'prefer_ffmpeg': True,
+            })
+            desired_ext = '.mp3'
+        else:
+            ydl_opts.update({
+                'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best',
+                'merge_output_format': 'mp4',
+                'prefer_ffmpeg': True,
+            })
+            desired_ext = '.mp4'
+
+        info = None
+        downloaded_path = None
+        is_photo = False
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                is_playlist = info.get('_type') == 'playlist'
+                entries = info.get('entries', []) if is_playlist else [info]
+                
+                if is_playlist and entries:
+                    for entry in entries:
+                        try:
+                            prepared = ydl.prepare_filename(entry)
+                            if prepared and os.path.exists(prepared):
+                                downloaded_path = prepared
+                                break
+                        except:
+                            continue
+                else:
+                    try:
+                        prepared = ydl.prepare_filename(info)
+                        if prepared and os.path.exists(prepared):
+                            downloaded_path = prepared
+                    except:
+                        pass
+        
+        except Exception as e:
+            error_msg = str(e)
+            if "No video formats found" in error_msg or "No media found" in error_msg:
+                logger.info(f"No video found, attempting to download photos with gallery-dl: {url}")
+                is_photo = True
+                
+                try:
+                    downloads_dir = os.path.join(os.getcwd(), 'downloads')
+                    os.makedirs(downloads_dir, exist_ok=True)
+                    
+                    gallery_dl_cmd = [
+                        'gallery-dl',
+                        '--cookies', cookies_file if os.path.exists(cookies_file) else '',
+                        '--destination', downloads_dir,
+                        '--directory', '',
+                        '--filename', f'{base}_{{num}}.{{extension}}',
+                        '--no-part',
+                        url
+                    ]
+                    
+                    if not os.path.exists(cookies_file):
+                        gallery_dl_cmd.remove('--cookies')
+                        gallery_dl_cmd.remove('')
+                    
+                    logger.info(f"Running gallery-dl for Instagram photos")
+                    result = subprocess.run(
+                        gallery_dl_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    
+                    if result.returncode != 0:
+                        logger.error(f"gallery-dl failed: {result.stderr}")
+                        raise Exception(f"gallery-dl failed: {result.stderr or result.stdout}")
+                    
+                    # gallery-dl creates subdirectories like downloads/instagram/username/
+                    # Search recursively for ALL jpg/png files created in the last minute
+                    found_files = []
+                    current_time = time.time()
+                    
+                    for root, dirs, files in os.walk(downloads_dir):
+                        for f in files:
+                            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                                full_path = os.path.join(root, f)
+                                # Check if file was created in the last 60 seconds
+                                if (current_time - os.path.getctime(full_path)) < 60:
+                                    found_files.append((full_path, os.path.getctime(full_path)))
+                    
+                    if found_files:
+                        # Sort by creation time and filename
+                        found_files.sort(key=lambda x: (x[1], x[0]), reverse=True)
+                        
+                        if len(found_files) == 1:
+                            # Single image
+                            source_path = found_files[0][0]
+                            final_path = os.path.join(downloads_dir, f"{base}.jpg")
+                            
+                            try:
+                                if source_path != final_path:
+                                    if os.path.exists(final_path):
+                                        os.remove(final_path)
+                                    shutil.copy2(source_path, final_path)
+                                    downloaded_path = final_path
+                                else:
+                                    downloaded_path = source_path
+                                logger.info(f"Downloaded single Instagram photo: {downloaded_path}")
+                            except Exception as copy_err:
+                                logger.error(f"Failed to copy file: {str(copy_err)}\n{traceback.format_exc()}")
+                                downloaded_path = source_path
+                        else:
+                            # Multiple images - return array of paths instead of zip
+                            logger.info(f"Found {len(found_files)} Instagram photos, returning as array")
+                            downloaded_path = [os.path.abspath(fp) for fp, _ in found_files]
+                        
+                        info = {'title': 'instagram_photos'}
+                    
+                    if not downloaded_path:
+                        raise Exception("gallery-dl completed but no image file was found")
+                        
+                except Exception as photo_error:
+                    logger.error(f"Photo download failed: {str(photo_error)}\n{traceback.format_exc()}")
+                    raise HTTPException(status_code=500, detail=f"Failed to download Instagram photos: {str(photo_error)}")
+            else:
+                logger.error(f"Instagram download error: {str(e)}\n{traceback.format_exc()}")
+                raise HTTPException(status_code=500, detail=f"Instagram download failed: {str(e)}")
+
+        if downloaded_path is None:
+            downloads_dir = os.path.join(os.getcwd(), 'downloads')
+            candidates = []
+            try:
+                candidates = sorted(os.listdir(downloads_dir), key=lambda x: os.path.getmtime(os.path.join(downloads_dir, x)), reverse=True)
+            except Exception:
+                candidates = []
+
+            for f in candidates:
+                full = os.path.join(downloads_dir, f)
+                if not os.path.isfile(full):
+                    continue
+                if os.path.getmtime(full) < (time.time() - 30):
+                    break
+                f_lower = f.lower()
+                if f_lower.endswith(('.mp4', '.jpg', '.jpeg', '.png', '.webp')):
+                    downloaded_path = full
+                    if f_lower.endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                        is_photo = True
+                    break
+
+        # Validate downloaded_path (can be string or list)
+        if not downloaded_path:
+            raise HTTPException(
+                status_code=500,
+                detail="Instagram download failed. Could not find downloaded file."
+            )
+        
+        if isinstance(downloaded_path, str) and not os.path.exists(downloaded_path):
+            raise HTTPException(
+                status_code=500,
+                detail="Instagram download failed. Could not find downloaded file."
+            )
+
+        # Handle array of paths (multiple images) or single path
+        if isinstance(downloaded_path, list):
+            # Multiple images - return array
+            # Don't run cleanup for multiple images - files are still being accessed by frontend
+            return {
+                "success": True,
+                "filePaths": downloaded_path,  # Array of paths
+                "isMultiple": True,
+                "title": (info.get('title') if isinstance(info, dict) else None) or "instagram_photos",
+                "format": 'jpg'
+            }
+        else:
+            # Single file
+            cleanup_folder("downloads", exclude_file=downloaded_path)
+            return {
+                "success": True,
+                "filePath": os.path.abspath(downloaded_path),
+                "isMultiple": False,
+                "title": (info.get('title') if isinstance(info, dict) else None) or "instagram_video",
+                "format": 'mp4' if format_type == 'video' else 'mp3'
+            }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Instagram download error: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Instagram download failed: {str(e)}")
+
+@app.get("/recent")
+async def recent_files():
+    try:
+        entries = []
+        for folder, ftype in [("downloads", "download"), ("converted", "converted")]:
+            if not os.path.isdir(folder):
+                continue
+            for name in os.listdir(folder):
+                full = os.path.join(folder, name)
+                if os.path.isfile(full):
+                    try:
+                        mtime = os.path.getmtime(full)
+                        ext = os.path.splitext(name)[1].lower()
+                        media_type = 'audio' if ext in ['.mp3', '.wav', '.m4a', '.aac', '.ogg'] else 'video'
+                        entries.append({
+                            "filePath": os.path.abspath(full),
+                            "filename": name,
+                            "modified": mtime,
+                            "source": ftype,
+                            "mediaType": media_type,
+                        })
+                    except Exception:
+                        continue
+        # Sort by modified desc and keep last 5
+        entries.sort(key=lambda x: x["modified"], reverse=True)
+        return {"success": True, "items": entries[:5]}
+    except Exception as e:
+        logger.error(f"/recent error: {e}")
+        return {"success": False, "items": [], "error": str(e)}
+
+
+def _audd_recognize(file_path: str, api_key: str) -> dict:
+    """Recognize audio using AudD API. Returns parsed JSON or error dict.
+    Requires AUDD_API_KEY in environment.
+    """
+    try:
+        if not os.path.exists(file_path):
+            return {"status": "error", "error": f"File not found: {file_path}"}
+        with open(file_path, 'rb') as f:
+            files = {"file": (os.path.basename(file_path), f, "audio/mpeg")}
+            data = {
+                "api_token": api_key,
+                "return": "spotify,deezer,apple_music",
+            }
+            r = requests.post("https://api.audd.io/", data=data, files=files, timeout=45)
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:
+        logger.warning(f"AudD recognition error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+@app.post("/copyright/check")
+async def check_copyright(request: Request):
+    """
+    Best-effort assessment whether media is usable for commercial use.
+    Inputs (JSON): { url?, platform?: 'youtube'|'tiktok'|..., filePath?, mode?: 'auto'|'metadata'|'fingerprint' }
+    Returns: { success, source, assessment: { allowedCommercialUse, riskLevel, confidence, license, notes[], recognized?, summary } }
+    NOTE: This is NOT legal advice.
+    """
+    try:
+        try:
+            payload = await request.json()
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+        url = (payload.get("url") or "").strip() or None
+        platform = (payload.get("platform") or "").strip().lower() or None
+        file_path = payload.get("filePath") or None
+        mode = (payload.get("mode") or "auto").strip().lower()
+
+        if not url and not file_path:
+            raise HTTPException(status_code=400, detail="Provide 'url' or 'filePath'")
+
+        # Auto-detect platform from URL if not provided
+        if url and not platform:
+            if "youtu" in url:
+                platform = "youtube"
+            elif "tiktok.com" in url:
+                platform = "tiktok"
+            else:
+                platform = "generic"
+
+        notes: List[str] = []
+        license_str: Optional[str] = None
+        allowed: Optional[bool] = None
+        risk = "medium"
+        confidence = 0.4
+        recognized: Optional[Dict] = None
+
+        # 1) Metadata assessment via yt-dlp (if URL present)
+        info = None
+        if url and mode in ("auto", "metadata"):
+            try:
+                with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+                    info = ydl.extract_info(url, download=False)
+            except Exception as e:
+                notes.append(f"Metadata extraction failed: {e}")
+
+            if platform == "youtube":
+                license_str = (info or {}).get("license")
+                if license_str:
+                    notes.append(f"YouTube license: {license_str}")
+                # Heuristic: Creative Commons often indicates commercial use allowed with attribution
+                if license_str and "creative commons" in license_str.lower():
+                    allowed = True
+                    risk = "medium"
+                    confidence = max(confidence, 0.7)
+                    notes.append("CC-BY on YouTube typically allows commercial use with attribution. Verify terms and give proper credit.")
+                else:
+                    # Standard YouTube license or unknown
+                    allowed = False
+                    risk = "high"
+                    confidence = max(confidence, 0.7)
+                    notes.append("Standard YouTube License or unknown license: commercial use not permitted.")
+
+                # If clearly a music track, increase caution
+                cats = ((info or {}).get("categories") or [])
+                if any((c or "").lower() == "music" for c in cats) or (info and (info.get("track") or info.get("artist"))):
+                    notes.append("Detected music-related metadata; heightened infringement risk.")
+
+            elif platform == "tiktok":
+                allowed = False
+                risk = "high"
+                confidence = max(confidence, 0.6)
+                notes.append("TikTok sounds and music are generally not licensed for commercial use outside TikTok.")
+                music_meta = (info or {}).get("music")
+                if isinstance(music_meta, dict):
+                    title = music_meta.get("title") or ""
+                    author = music_meta.get("author") or ""
+                    if title or author:
+                        notes.append(f"Detected music: {title} by {author}")
+            else:
+                notes.append("Unknown platform; cannot determine license from metadata.")
+
+        # 2) Optional fingerprinting via AudD if file available and API key present
+        audd_key = os.getenv("AUDD_API_KEY")
+        if file_path and (mode in ("auto", "fingerprint")) and audd_key:
+            try:
+                resp = _audd_recognize(file_path, audd_key)
+                if resp and resp.get("result"):
+                    r = resp["result"]
+                    recognized = {
+                        "title": r.get("title"),
+                        "artist": r.get("artist"),
+                        "album": (r.get("album", {}) or {}).get("title") if isinstance(r.get("album"), dict) else r.get("album"),
+                        "label": r.get("label"),
+                        "timecode": r.get("timecode"),
+                    }
+                    # Recognized commercial track => high risk, not allowed
+                    allowed = False
+                    risk = "high"
+                    confidence = max(confidence, 0.85)
+                    notes.append(f"Audio fingerprint matched: {recognized.get('title') or ''} - {recognized.get('artist') or ''}")
+                elif resp and resp.get("status") == "error":
+                    notes.append(f"AudD error: {resp.get('error')}")
+                else:
+                    notes.append("AudD: No match found. This doesn't guarantee rights.")
+            except Exception as e:
+                notes.append(f"AudD recognition failed: {e}")
+        elif file_path and (mode in ("auto", "fingerprint")) and not audd_key:
+            notes.append("Set AUDD_API_KEY in .env to enable audio fingerprint checks.")
+
+        # Summary
+        if allowed is True:
+            summary = "Likely OK with attribution (Creative Commons detected). Verify terms and credits."
+        elif allowed is False:
+            summary = "Not safe for commercial use (standard/unknown license or copyrighted content)."
+        else:
+            summary = "Unable to determine. Treat as not safe unless you own or have explicit rights."
+
+        return {
+            "success": True,
+            "source": platform or ("file" if file_path else None),
+            "assessment": {
+                "allowedCommercialUse": allowed,
+                "riskLevel": risk,
+                "confidence": round(confidence, 2),
+                "license": license_str,
+                "notes": notes,
+                "recognized": recognized,
+                "summary": summary,
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"/copyright/check error: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)

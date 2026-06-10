@@ -1,0 +1,65 @@
+appId: com.mediadownloader.app
+productName: Media Downloader
+directories:
+  output: dist
+  buildResources: static
+
+files:
+  - "**/*"
+  - "!**/node_modules/*/{CHANGELOG.md,README.md,README,readme.md,readme}"
+  - "!**/node_modules/.bin"
+  - "!**/*.{iml,o,hprof,orig,pyc,pyo,rbc,swp,csproj,sln,xproj}"
+  - "!.editorconfig"
+  - "!**/__pycache__"
+  - "!**/*.log"
+  - "!**/venv"
+  - "!**/.git"
+  - "!**/.github"
+  - "!**/node_modules/**/src/**/*.ts"
+  - "!**/node_modules/**/README.*"
+  - "!**/node_modules/**/LICENSE*"
+  - "!**/node_modules/**/*.md"
+  - "!**/node_modules/**/CHANGELOG*"
+  - "!**/node_modules/**/test/**/*"
+  - "!**/node_modules/**/tests/**/*"
+  - "!**/node_modules/**/spec/**/*"
+  - "!**/node_modules/**/examples/**/*"
+
+win:
+  target: nsis
+  icon: static/icon.ico
+  artifactName: "${productName}-${version}-win-${arch}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "${productName}"
+  uninstallDisplayName: "${productName}"
+  license: ""
+  menuCategory: "${productName}"
+
+mac:
+  target: dmg
+  category: public.app-category.utilities
+  icon: static/icon.icns
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"
+
+dmg:
+  title: "${productName} ${version}"
+  icon: static/icon.icns
+  background: static/background.png
+  contents: [
+    { x: 130, y: 220, type: "file", path: "${app}" },
+    { x: 410, y: 220, type: "link", path: "/Applications" }
+  ]
+  window: { size: { width: 540, height: 380 } }
+
+linux:
+  target: ["AppImage", "deb"]
+  category: Utility
+  icon: static/icon.png
+  artifactName: "${productName}-${version}-linux-${arch}.${ext}"

@@ -47,6 +47,10 @@ yarn-error.log*
 downloads/
 converted/
 
+# Sensitive - Instagram cookies and sessions
+instagram_cookies.txt
+instaloader_session
+
 # Logs
 *.log
 

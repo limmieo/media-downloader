@@ -11,3 +11,4 @@ aiohttp==3.9.1
 requests==2.31.0
 beautifulsoup4==4.12.2
 playwright==1.40.0
+instaloader>=4.10.0

@@ -932,6 +932,76 @@ body.light-theme .blob {
     }
 }
 
+/* Instagram Gallery */
+.instagram-gallery {
+    display: grid;
+    grid-template-columns: repeat(4, 120px);
+    gap: 0.75rem;
+    margin-top: 1.5rem;
+    padding: 1rem;
+    max-width: 540px;
+    justify-content: start;
+}
+
+.instagram-gallery-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    width: 120px;
+    max-width: 120px;
+    overflow: hidden;
+}
+
+.instagram-gallery-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+}
+
+.instagram-gallery-item img {
+    width: 100px !important;
+    height: 100px !important;
+    max-width: 100px !important;
+    max-height: 100px !important;
+    object-fit: cover;
+    border-radius: 8px;
+    border: 2px solid rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.05);
+    display: block;
+}
+
+.instagram-gallery-item img[src=""] {
+    display: none;
+}
+
+.instagram-gallery-item img:not([src]),
+.instagram-gallery-item img[src=""],
+.instagram-gallery-item img[src="about:blank"] {
+    opacity: 0.3;
+}
+
+.instagram-gallery-item .btn {
+    width: 100%;
+    padding: 0.5rem;
+    font-size: 0.9rem;
+}
+
+.instagram-save-all {
+    margin-top: 1.5rem;
+    text-align: center;
+}
+
+.instagram-save-all .btn {
+    padding: 1rem 2rem;
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
 @media (max-width: 480px) {
     .header-content {
         padding: 1.5rem;
@@ -957,5 +1027,10 @@ body.light-theme .blob {
     
     .upload-icon {
         font-size: 3rem;
+    }
+    
+    .instagram-gallery {
+        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+        gap: 1rem;
     }
 }

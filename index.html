@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' http://localhost:* https:; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline'; connect-src 'self' http://localhost:* https:;">
+    <title>Media Downloader</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+        :root {
+            --primary-color: #4361ee;
+            --secondary-color: #3f37c9;
+            --accent-color: #4cc9f0;
+            --success-color: #4ade80;
+            --error-color: #f87171;
+            --text-color: #374151;
+            --bg-color: #f9fafb;
+            --card-bg: #ffffff;
+            --border-radius: 12px;
+            --box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            line-height: 1.6;
+            padding: 0;
+            margin: 0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .app-header {
+            background: linear-gradient(135deg, var(--primary-color), var(--secondary-color));
+            color: white;
+            padding: 1.5rem 2rem;
+            text-align: center;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        
+        .app-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .app-subtitle {
+            font-size: 1rem;
+            opacity: 0.9;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            flex: 1;
+        }
+        
+        .card {
+            background-color: var(--card-bg);
+            border-radius: var(--border-radius);
+            box-shadow: var(--box-shadow);
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+        
+        .tabs {
+            display: flex;
+            background-color: #f3f4f6;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        .tab-button {
+            padding: 1rem 1.5rem;
+            border: none;
+            background: none;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #6b7280;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            position: relative;
+        }
+        
+        .tab-button:hover {
+            color: var(--primary-color);
+        }
+        
+        .tab-button.active {
+            color: var(--primary-color);
+        }
+        
+        .tab-button.active::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            height: 3px;
+            background-color: var(--primary-color);
+        }
+        
+        .tab-content {
+            display: none;
+            padding: 2rem;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 0.5rem;
+            font-weight: 600;
+            color: #4b5563;
+        }
+        
+        .form-control {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            font-size: 1rem;
+            border: 1px solid #d1d5db;
+            border-radius: 0.5rem;
+            transition: border-color 0.15s ease-in-out;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 3px rgba(67, 97, 238, 0.15);
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            font-weight: 600;
+            text-align: center;
+            border: none;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            background-color: var(--secondary-color);
+            transform: translateY(-2px);
+        }
+        
+        .status {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            font-weight: 500;
+        }
+        
+        .status-success {
+            background-color: rgba(74, 222, 128, 0.2);
+            color: #166534;
+            border-left: 4px solid var(--success-color);
+        }
+        
+        .status-error {
+            background-color: rgba(248, 113, 113, 0.2);
+            color: #991b1b;
+            border-left: 4px solid var(--error-color);
+        }
+        
+        .progress-container {
+            width: 100%;
+            background-color: #e5e7eb;
+            border-radius: 0.5rem;
+            margin-top: 1.5rem;
+            overflow: hidden;
+            display: none;
+        }
+        
+        .progress-bar {
+            height: 10px;
+            background: linear-gradient(90deg, var(--primary-color), var(--accent-color));
+            border-radius: 0.5rem;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .progress-text {
+            text-align: center;
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            color: #6b7280;
+        }
+        
+        .file-input-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+        
+        .file-input-wrapper input[type="file"] {
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+        }
+        
+        .file-input-button {
+            display: block;
+            padding: 0.75rem 1rem;
+            background-color: #f3f4f6;
+            border: 1px dashed #d1d5db;
+            border-radius: 0.5rem;
+            text-align: center;
+            color: #6b7280;
+            transition: all 0.3s ease;
+        }
+        
+        .file-input-wrapper:hover .file-input-button {
+            background-color: #e5e7eb;
+            border-color: #9ca3af;
+        }
+        
+        .file-name {
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            color: #6b7280;
+        }
+        
+        .footer {
+            text-align: center;
+            padding: 1.5rem;
+            background-color: #f3f4f6;
+            color: #6b7280;
+            font-size: 0.875rem;
+            margin-top: auto;
+        }
+
+        .recent-card h2 {
+            margin-bottom: 0.75rem;
+        }
+        .recent-list {
+            display: grid;
+            grid-template-columns: 1fr auto auto;
+            gap: 0.5rem 0.75rem;
+            align-items: center;
+        }
+        .recent-item {
+            display: contents;
+        }
+        .recent-filename {
+            color: #111827;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .recent-actions button { margin-left: 0.5rem; }
+    </style>
+</head>
+<body>
+    <header class="app-header">
+        <h1 class="app-title">Media Downloader</h1>
+        <p class="app-subtitle">Download and convert videos from various platforms</p>
+    </header>
+
+    <div class="container">
+        <div class="card">
+            <div class="tabs">
+                <button class="tab-button active" onclick="openTab(event, 'youtube')">YouTube</button>
+                <button class="tab-button" onclick="openTab(event, 'tiktok')">TikTok</button>
+                <button class="tab-button" onclick="openTab(event, 'instagram')">Instagram</button>
+                <button class="tab-button" onclick="openTab(event, 'convert')">Convert Video</button>
+            </div>
+            
+            <div id="youtube" class="tab-content active">
+                <h2>Download YouTube Video</h2>
+                <div class="form-group">
+                    <label class="form-label" for="youtubeUrl">YouTube URL</label>
+                    <input type="text" id="youtubeUrl" class="form-control" placeholder="https://www.youtube.com/watch?v=...">
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="youtubeFormat">Format</label>
+                    <select id="youtubeFormat" class="form-control">
+                        <option value="mp3">MP3 (Audio)</option>
+                        <option value="mp4">MP4 (Video)</option>
+                    </select>
+                </div>
+                <button id="youtubeDownloadBtn" class="btn btn-primary">Download</button>
+                <div id="youtubeStatus" class="status"></div>
+                <div id="youtubePreview" class="inline-preview"></div>
+                <div id="youtubeActions" class="actions"></div>
+            </div>
+            
+            <div id="tiktok" class="tab-content">
+                <h2>Download TikTok Video</h2>
+                <div class="form-group">
+                    <label class="form-label" for="tiktokUrl">TikTok URL</label>
+                    <input type="text" id="tiktokUrl" class="form-control" placeholder="https://www.tiktok.com/@username/video/...">
+                </div>
+                <button id="tiktokDownloadBtn" class="btn btn-primary">Download</button>
+                <div id="tiktokStatus" class="status"></div>
+                <div id="tiktokPreview" class="inline-preview"></div>
+                <div id="tiktokActions" class="actions"></div>
+            </div>
+
+            <div id="instagram" class="tab-content">
+                <h2>Download Instagram Content</h2>
+                <div class="form-group">
+                    <label class="form-label" for="instagramUrl">Instagram URL</label>
+                    <input type="text" id="instagramUrl" class="form-control" placeholder="https://www.instagram.com/p/... or /reel/...">
+                </div>
+                <button id="instagramDownloadBtn" class="btn btn-primary">Download</button>
+                <div id="instagramStatus" class="status"></div>
+                <div id="instagramPreview" class="inline-preview"></div>
+                <div id="instagramGallery" class="instagram-gallery"></div>
+                <div id="instagramActions" class="actions"></div>
+            </div>
+            
+            <div id="convert" class="tab-content">
+                <h2>Convert Video</h2>
+                <div class="form-group">
+                    <label class="form-label" for="videoFile">Select Video File</label>
+                    <div class="file-input-wrapper">
+                        <div class="file-input-button">Choose a video file or drag and drop here</div>
+                        <input type="file" id="videoFile" accept="video/*">
+                    </div>
+                    <div class="file-name" id="fileName"></div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" for="convertFormat">Convert to</label>
+                    <select id="convertFormat" class="form-control">
+                        <option value="mp3">MP3 (Audio)</option>
+                        <option value="mp4">MP4 (Video)</option>
+                        <option value="avi">AVI</option>
+                        <option value="mov">MOV</option>
+                    </select>
+                </div>
+                <button id="convertBtn" class="btn btn-primary">Convert</button>
+                <div id="convertStatus" class="status"></div>
+                <div id="convertPreview" class="inline-preview"></div>
+                <div id="convertActions" class="actions"></div>
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-bar" id="progressBar"></div>
+                    <div class="progress-text" id="progressText">0%</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card recent-card" id="recentSection">
+            <h2>Recently downloaded/converted (last 5)</h2>
+            <div id="recentStatus" class="status" style="display:none"></div>
+            <div id="recentList" class="recent-list"></div>
+        </div>
+        
+    <script>
+        // Tab switching
+        function openTab(evt, tabName) {
+            // Hide all tab content
+            const tabContents = document.getElementsByClassName('tab-content');
+            for (let i = 0; i < tabContents.length; i++) {
+                tabContents[i].classList.remove('active');
+            }
+            
+            // Remove active class from all tab buttons
+            const tabButtons = document.getElementsByClassName('tab-button');
+            for (let i = 0; i < tabButtons.length; i++) {
+                tabButtons[i].classList.remove('active');
+            }
+            
+            // Show the current tab and add active class to the button
+            document.getElementById(tabName).classList.add('active');
+            evt.currentTarget.classList.add('active');
+        }
+
+        // Electron APIs are exposed via window.electron by preload.js
+        // Do NOT destructure at load time; reference through window.electron to avoid undefined issues.
+        
+        // Get server URL from main process (guarded)
+        let SERVER_URL = 'http://localhost:5000';
+        if (window.electron?.ipcRenderer?.invoke) {
+            window.electron.ipcRenderer.invoke('get-server-url')
+                .then(url => { if (url) SERVER_URL = url; })
+                .catch(() => {});
+        }
+
+        // Show status message
+        function showStatus(elementId, message, isError = false) {
+            const status = document.getElementById(elementId);
+            status.textContent = message;
+            status.className = isError ? 'status status-error' : 'status status-success';
+            status.style.display = 'block';
+            
+            // Hide after 8 seconds
+            setTimeout(() => {
+                status.style.display = 'none';
+            }, 8000);
+        }
+
+        // Show progress bar
+        function showProgress(show) {
+            const progressContainer = document.getElementById('progressContainer');
+            progressContainer.style.display = show ? 'block' : 'none';
+        }
+
+        // Update progress bar
+        function updateProgress(percent) {
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            progressBar.style.width = `${percent}%`;
+            progressText.textContent = `${Math.round(percent)}%`;
+        }
+        
+        // Safely open a file in its folder via Electron shell (if available)
+        function openInFolder(filePath) {
+            try {
+                if (window.electron?.shell?.showItemInFolder && typeof window.electron.shell.showItemInFolder === 'function') {
+                    window.electron.shell.showItemInFolder(filePath);
+                }
+            } catch (e) {
+                console.warn('Unable to open folder:', e);
+            }
+        }
+
+        // Extract filename from a path
+        function getFileNameFromPath(p) {
+            if (!p) return '';
+            return p.split('\\').pop().split('/').pop();
+        }
+
+        // Sanitize filename: keep original name, replace spaces with underscores, drop unsafe chars
+        function sanitizeFilename(name) {
+            if (!name) return '';
+            const parts = name.split('.');
+            const ext = parts.length > 1 ? '.' + parts.pop() : '';
+            let base = parts.join('.') || name;
+            base = base.replace(/\s+/g, '_'); // spaces -> underscores
+            base = base.replace(/[^A-Za-z0-9._-]/g, ''); // keep safe chars
+            base = base.replace(/_+/g, '_'); // collapse underscores
+            base = base.replace(/^_+|_+$/g, ''); // trim underscores
+            if (base.length === 0) base = 'file';
+            // limit total length
+            const maxBase = 120;
+            if (base.length > maxBase) base = base.slice(0, maxBase);
+            return base + ext.toLowerCase();
+        }
+
+        // Suggest Save As and copy file
+        async function suggestSaveAs(sourcePath, suggestedName) {
+            if (!window.electron?.save?.chooseLocation) return;
+            const defaultPath = suggestedName || getFileNameFromPath(sourcePath);
+            try {
+                const res = await window.electron.save.chooseLocation(defaultPath);
+                if (!res.canceled && res.filePath) {
+                    const saveRes = await window.electron.save.copyTo(sourcePath, res.filePath);
+                    if (!saveRes.success) {
+                        console.warn('Save failed:', saveRes.error);
+                    }
+                }
+            } catch (e) {
+                console.warn('Save dialog error:', e);
+            }
+        }
+
+        // Render inline preview for audio/video
+        function showPreview(containerId, filePath) {
+            try {
+                const container = document.getElementById(containerId);
+                if (!container) return;
+                const ext = (filePath.split('.').pop() || '').toLowerCase();
+                const fileUrl = 'file:///' + filePath.replace(/\\/g, '/');
+                let html = '';
+                if (['mp3','wav','aac','m4a','ogg'].includes(ext)) {
+                    html = `<audio controls style="width:100%; margin-top:12px;"><source src="${fileUrl}"></audio>`;
+                } else if (['jpg','jpeg','png','gif','webp','bmp'].includes(ext)) {
+                    html = `<img src="${fileUrl}" style="width:100%; max-width:600px; margin-top:12px; border-radius:8px; border:2px solid rgba(255,255,255,0.1);" alt="Preview">`;
+                } else {
+                    html = `<video controls style="width:100%; max-height:360px; margin-top:12px; background:#000;" src="${fileUrl}"></video>`;
+                }
+                container.innerHTML = html;
+            } catch (e) {
+                console.warn('Preview error:', e);
+            }
+        }
+
+        // Render actions (Download button) for manual save
+        function renderActions(containerId, sourcePath, suggestedName) {
+            try {
+                const container = document.getElementById(containerId);
+                if (!container) return;
+                const safeSuggested = sanitizeFilename(suggestedName || getFileNameFromPath(sourcePath));
+                container.innerHTML = '';
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-secondary';
+                btn.textContent = `Download (${safeSuggested})`;
+                btn.addEventListener('click', async () => {
+                    await suggestSaveAs(sourcePath, safeSuggested);
+                });
+                container.appendChild(btn);
+            } catch (e) {
+                console.warn('Render actions error:', e);
+            }
+        }
+        
+        // Display file name when selected
+        document.getElementById('videoFile').addEventListener('change', function(e) {
+            const fileName = e.target.files[0] ? e.target.files[0].name : 'No file selected';
+            document.getElementById('fileName').textContent = fileName;
+        });
+
+        // YouTube Download
+        document.getElementById('youtubeDownloadBtn').addEventListener('click', async () => {
+            const url = document.getElementById('youtubeUrl').value.trim();
+            const format = document.getElementById('youtubeFormat').value;
+            
+            if (!url) {
+                showStatus('youtubeStatus', 'Please enter a YouTube URL', true);
+                return;
+            }
+
+            try {
+                showProgress(true);
+                updateProgress(10);
+                showStatus('youtubeStatus', 'Downloading, please wait...', false);
+                
+                const response = await fetch(`${SERVER_URL}/download/youtube`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, format })
+                });
+                updateProgress(70);
+                
+                const result = await response.json();
+                updateProgress(100);
+                
+                if (result.success) {
+                    const rawName = (result.title ? `${result.title}.${format}` : getFileNameFromPath(result.filePath));
+                    const suggested = sanitizeFilename(rawName);
+                    showStatus('youtubeStatus', `Ready. Preview below. Click Download to save.`);
+                    showPreview('youtubePreview', result.filePath);
+                    renderActions('youtubeActions', result.filePath, suggested);
+                    await loadRecent();
+                } else {
+                    showStatus('youtubeStatus', `Download failed: ${result.error || 'Unknown error'}`, true);
+                }
+            } catch (error) {
+                console.error('YouTube download error:', error);
+                showStatus('youtubeStatus', `Error: ${error.message}`, true);
+            } finally {
+                showProgress(false);
+                updateProgress(0);
+            }
+        });
+
+        // TikTok Download
+        document.getElementById('tiktokDownloadBtn').addEventListener('click', async () => {
+            const url = document.getElementById('tiktokUrl').value.trim();
+            
+            if (!url) {
+                showStatus('tiktokStatus', 'Please enter a TikTok URL', true);
+                return;
+            }
+
+            try {
+                showProgress(true);
+                updateProgress(10);
+                showStatus('tiktokStatus', 'Downloading, please wait...', false);
+                
+                const response = await fetch(`${SERVER_URL}/download/tiktok`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+                updateProgress(70);
+                
+                const result = await response.json();
+                updateProgress(100);
+                
+                if (result.success) {
+                    const suggested = sanitizeFilename(getFileNameFromPath(result.filePath));
+                    showStatus('tiktokStatus', `Ready. Preview below. Click Download to save.`);
+                    showPreview('tiktokPreview', result.filePath);
+                    renderActions('tiktokActions', result.filePath, suggested);
+                    await loadRecent();
+                } else {
+                    showStatus('tiktokStatus', `Download failed: ${result.error || 'Unknown error'}`, true);
+                }
+            } catch (error) {
+                console.error('TikTok download error:', error);
+                showStatus('tiktokStatus', `Error: ${error.message}`, true);
+            } finally {
+                showProgress(false);
+                updateProgress(0);
+            }
+        });
+
+        // Instagram Download
+        document.getElementById('instagramDownloadBtn').addEventListener('click', async () => {
+            const url = document.getElementById('instagramUrl').value.trim();
+
+            if (!url) {
+                showStatus('instagramStatus', 'Please enter an Instagram URL', true);
+                return;
+            }
+
+            try {
+                showProgress(true);
+                updateProgress(10);
+                showStatus('instagramStatus', 'Downloading, please wait...', false);
+                
+                // Clear previous results
+                document.getElementById('instagramPreview').innerHTML = '';
+                document.getElementById('instagramGallery').innerHTML = '';
+                document.getElementById('instagramActions').innerHTML = '';
+
+                const response = await fetch(`${SERVER_URL}/download/instagram`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url, format: 'mp4' })
+                });
+                updateProgress(70);
+
+                const result = await response.json();
+                updateProgress(100);
+
+                if (result.success) {
+                    if (result.isMultiple && result.filePaths) {
+                        // Multiple images - just show Save All button
+                        showStatus('instagramStatus', `Downloaded ${result.filePaths.length} photos.`);
+                        
+                        const gallery = document.getElementById('instagramGallery');
+                        gallery.innerHTML = ''; // Clear previous content
+                        
+                        // Store file paths
+                        window.instagramImageFiles = result.filePaths.map((filePath, index) => ({
+                            filePath: filePath,
+                            filename: filePath.split('\\').pop().split('/').pop()
+                        }));
+                        
+                        // Add "Save All" button
+                        const saveAllBtn = document.createElement('button');
+                        saveAllBtn.className = 'btn btn-primary';
+                        saveAllBtn.style.marginTop = '1rem';
+                        saveAllBtn.textContent = `💾 Save All ${result.filePaths.length} Images`;
+                        saveAllBtn.onclick = () => saveAllInstagramImagesFromPaths();
+                        gallery.appendChild(saveAllBtn);
+                    } else {
+                        // Single video or image
+                        const filePath = result.filePath;
+                        const suggested = sanitizeFilename(getFileNameFromPath(filePath));
+                        showStatus('instagramStatus', `Ready. Preview below. Click Download to save.`);
+                        showPreview('instagramPreview', filePath);
+                        renderActions('instagramActions', filePath, suggested);
+                    }
+                    
+                    await loadRecent();
+                } else {
+                    showStatus('instagramStatus', `Download failed: ${result.error || result.detail || 'Unknown error'}`, true);
+                }
+            } catch (error) {
+                console.error('Instagram download error:', error);
+                showStatus('instagramStatus', `Error: ${error.message}`, true);
+            } finally {
+                showProgress(false);
+                updateProgress(0);
+            }
+        });
+        
+        // Helper function to save individual image from file path
+        window.saveImageFromPath = async (filePath, filename) => {
+            await suggestSaveAs(filePath, filename);
+        };
+        
+        // Helper function to save all images from file paths
+        window.saveAllInstagramImagesFromPaths = async () => {
+            if (!window.instagramImageFiles) return;
+            
+            for (const img of window.instagramImageFiles) {
+                await suggestSaveAs(img.filePath, img.filename);
+                await new Promise(resolve => setTimeout(resolve, 200)); // Small delay between downloads
+            }
+        };
+
+        // Video Conversion
+        document.getElementById('convertBtn').addEventListener('click', async () => {
+            const fileInput = document.getElementById('videoFile');
+            const format = document.getElementById('convertFormat').value;
+            
+            if (!fileInput.files || fileInput.files.length === 0) {
+                showStatus('convertStatus', 'Please select a video file', true);
+                return;
+            }
+
+            const file = fileInput.files[0];
+            // Use a simple filename without path manipulation
+            const outputFilename = `${file.name.split('.')[0]}.${format}`;
+
+            try {
+                showProgress(true);
+                updateProgress(10);
+                showStatus('convertStatus', 'Converting video, please wait...', false);
+                
+                // Create a FormData object to send the file
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('output_format', format);
+                
+                // Send the file to the FastAPI server for conversion
+                const response = await fetch(`${SERVER_URL}/convert`, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                updateProgress(70);
+                const result = await response.json();
+                updateProgress(100);
+                
+                if (result.success) {
+                    const suggested = sanitizeFilename(getFileNameFromPath(result.filePath));
+                    showStatus('convertStatus', `Ready. Preview below. Click Download to save.`);
+                    showPreview('convertPreview', result.filePath);
+                    renderActions('convertActions', result.filePath, suggested);
+                    await loadRecent();
+                } else {
+                    showStatus('convertStatus', `Conversion failed: ${result.error || 'Unknown error'}`, true);
+                }
+            } catch (error) {
+                console.error('Conversion error:', error);
+                showStatus('convertStatus', `Error: ${error.message}`, true);
+            } finally {
+                showProgress(false);
+                updateProgress(0);
+            }
+        });
+
+        // Load recent files and render list
+        async function loadRecent() {
+            try {
+                const res = await fetch(`${SERVER_URL}/recent`);
+                const data = await res.json();
+                const list = document.getElementById('recentList');
+                list.innerHTML = '';
+                if (!data.success) return;
+                for (const item of data.items) {
+                    const row = document.createElement('div');
+                    row.className = 'recent-item';
+                    const name = document.createElement('div');
+                    name.className = 'recent-filename';
+                    name.textContent = item.filename;
+                    const previewBtn = document.createElement('button');
+                    previewBtn.className = 'btn btn-secondary';
+                    previewBtn.textContent = 'Preview';
+                    previewBtn.addEventListener('click', () => {
+                        // Decide target preview area by mediaType
+                        const target = item.mediaType === 'audio' ? 'youtubePreview' : 'tiktokPreview';
+                        showPreview(target, item.filePath);
+                    });
+                    const dlBtn = document.createElement('button');
+                    dlBtn.className = 'btn btn-primary';
+                    const safeName = sanitizeFilename(item.filename);
+                    dlBtn.textContent = `Download (${safeName})`;
+                    dlBtn.addEventListener('click', async () => {
+                        await suggestSaveAs(item.filePath, safeName);
+                    });
+                    list.appendChild(name);
+                    list.appendChild(previewBtn);
+                    list.appendChild(dlBtn);
+                }
+            } catch (e) {
+                console.warn('Failed to load recent:', e);
+            }
+        }
+
+        // initial load
+        loadRecent();
+        
+        // Add footer to the page
+        document.body.insertAdjacentHTML('beforeend', `
+            <footer class="footer">
+                <p>Media Downloader &copy; ${new Date().getFullYear()} | A modern media downloading and conversion tool</p>
+            </footer>
+        `);
+    </script>
+</body>
+</html>

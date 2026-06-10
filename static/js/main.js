@@ -47,6 +47,8 @@ class Notification {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Track last converted absolute file path for file-based copyright check
+    let lastConvertedFilePath = null;
     // Initialize theme
     initializeTheme();
     
@@ -69,7 +71,34 @@ document.addEventListener('DOMContentLoaded', function() {
             btn.classList.add('active');
             document.getElementById(targetId).classList.add('active');
         });
+        
     });
+
+    // ===== Copyright Check: shared runner =====
+    async function runCopyrightCheck(payload, { onStart, onDone, onError } = {}) {
+        try {
+            onStart && onStart();
+            const res = await fetch('/copyright/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.detail || `Request failed (${res.status})`);
+            }
+            const data = await res.json();
+            const a = (data && data.assessment) || {};
+            const allowed = a.allowedCommercialUse === true ? 'Allowed (with conditions)' : a.allowedCommercialUse === false ? 'Not Allowed' : 'Unknown';
+            const confidence = (typeof a.confidence === 'number') ? `${Math.round(a.confidence * 100)}%` : 'n/a';
+            new Notification('info', `Commercial Use: ${allowed} • Risk: ${a.riskLevel || 'n/a'} • Confidence: ${confidence}`);
+            if (a.summary) new Notification(a.allowedCommercialUse ? 'success' : 'error', a.summary);
+            onDone && onDone(data);
+        } catch (e) {
+            onError && onError(e);
+            new Notification('error', e.message || 'Copyright check failed');
+        }
+    }
 
     // Video converter
     const convertForm = document.getElementById('convert-form');
@@ -213,6 +242,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
 
                 const result = await response.json();
+
+                // Keep absolute file path (if provided by backend) for copyright checks
+                lastConvertedFilePath = result.filePath || result.file_path || null;
                 
                 // Show preview section
                 const previewSection = document.getElementById('preview-section');
@@ -222,33 +254,49 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Clear previous preview
                 previewContent.innerHTML = '';
                 
+                // Determine a browser-accessible URL for the converted file
+                const routeUrl = (result.file_path)
+                    || (result.filename ? `/converted/${encodeURIComponent(result.filename)}` : null)
+                    || (result.filePath || '');
+
                 // Create preview based on file type
                 if (outputFormat === 'mp3') {
                     // Audio preview
                     const audio = document.createElement('audio');
                     audio.controls = true;
-                    audio.src = result.file_path;
+                    // Prefer route URL if present; avoid using absolute local path in browser
+                    audio.src = routeUrl;
                     audio.className = 'w-full max-w-full';
                     previewContent.appendChild(audio);
                     
                     // Set up download button
                     downloadBtn.onclick = (e) => {
                         e.preventDefault();
-                        window.location.href = result.file_path;
+                        const href = routeUrl || '#';
+                        if (href === '#') {
+                            new Notification('error', 'Unable to download: missing file path');
+                        } else {
+                            window.location.href = href;
+                        }
                     };
                     downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download Audio';
                 } else {
                     // Video preview
                     const video = document.createElement('video');
                     video.controls = true;
-                    video.src = result.file_path;
+                    video.src = routeUrl;
                     video.className = 'w-full max-w-full';
                     previewContent.appendChild(video);
                     
                     // Set up download button
                     downloadBtn.onclick = (e) => {
                         e.preventDefault();
-                        window.location.href = result.file_path;
+                        const href = routeUrl || '#';
+                        if (href === '#') {
+                            new Notification('error', 'Unable to download: missing file path');
+                        } else {
+                            window.location.href = href;
+                        }
                     };
                     downloadBtn.innerHTML = '<i class="fas fa-download"></i> Download Video';
                 }
@@ -276,12 +324,51 @@ document.addEventListener('DOMContentLoaded', function() {
             updateProgress(0);
         }
     });
-
+    
+    // File-based: Check Commercial Use using last converted absolute path
+    const fileCheckBtn = document.getElementById('copyright-check-file-btn');
+    if (fileCheckBtn) {
+        fileCheckBtn.addEventListener('click', async () => {
+            if (!lastConvertedFilePath) {
+                new Notification('error', 'No converted file to check yet. Convert a file first.');
+                return;
+            }
+            const original = fileCheckBtn.innerHTML;
+            await runCopyrightCheck(
+                { filePath: lastConvertedFilePath, mode: 'auto' },
+                {
+                    onStart: () => { fileCheckBtn.disabled = true; fileCheckBtn.innerHTML = '<span class="loading"></span> Checking...'; },
+                    onDone: () => { fileCheckBtn.disabled = false; fileCheckBtn.innerHTML = original; },
+                    onError: () => { fileCheckBtn.disabled = false; fileCheckBtn.innerHTML = original; }
+                }
+            );
+        });
+    }
+    
     // YouTube downloader with enhanced features
     const youtubeForm = document.getElementById('youtube-form');
     const youtubeUrlInput = document.getElementById('youtube-url');
     const youtubeThumbnail = document.getElementById('youtube-thumbnail');
     const youtubeProgress = document.getElementById('youtube-progress');
+    const youtubeCheckBtn = document.getElementById('youtube-check-btn');
+    if (youtubeCheckBtn) {
+        youtubeCheckBtn.addEventListener('click', async () => {
+            const url = youtubeUrlInput.value.trim();
+            if (!url) {
+                new Notification('error', 'Please enter a YouTube URL');
+                return;
+            }
+            const original = youtubeCheckBtn.innerHTML;
+            await runCopyrightCheck(
+                { url, platform: 'youtube', mode: 'metadata' },
+                {
+                    onStart: () => { youtubeCheckBtn.disabled = true; youtubeCheckBtn.innerHTML = '<span class="loading"></span> Checking...'; },
+                    onDone: () => { youtubeCheckBtn.disabled = false; youtubeCheckBtn.innerHTML = original; },
+                    onError: () => { youtubeCheckBtn.disabled = false; youtubeCheckBtn.innerHTML = original; }
+                }
+            );
+        });
+    }
     const youtubeProgressFill = document.getElementById('youtube-progress-fill');
     const youtubeProgressText = document.getElementById('youtube-progress-text');
     
@@ -447,6 +534,27 @@ document.addEventListener('DOMContentLoaded', function() {
         <div class="progress-text" id="tiktok-progress-text">Processing...</div>
     `;
     tiktokForm.appendChild(tiktokProgress);
+    
+    // TikTok: Check Commercial Use
+    const tiktokCheckBtn = document.getElementById('tiktok-check-btn');
+    if (tiktokCheckBtn) {
+        tiktokCheckBtn.addEventListener('click', async () => {
+            const url = tiktokUrlInput.value.trim();
+            if (!url) {
+                new Notification('error', 'Please enter a TikTok URL');
+                return;
+            }
+            const original = tiktokCheckBtn.innerHTML;
+            await runCopyrightCheck(
+                { url, platform: 'tiktok', mode: 'metadata' },
+                {
+                    onStart: () => { tiktokCheckBtn.disabled = true; tiktokCheckBtn.innerHTML = '<span class="loading"></span> Checking...'; },
+                    onDone: () => { tiktokCheckBtn.disabled = false; tiktokCheckBtn.innerHTML = original; },
+                    onError: () => { tiktokCheckBtn.disabled = false; tiktokCheckBtn.innerHTML = original; }
+                }
+            );
+        });
+    }
     
     tiktokForm.addEventListener('submit', async (e) => {
         e.preventDefault();
